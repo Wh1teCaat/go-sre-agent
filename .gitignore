@@ -1,0 +1,55 @@
+# Local environment and secrets
+.env
+.env.*
+!.env.example
+*.key
+*.pem
+*.crt
+*.csr
+*.p12
+*.pfx
+*.token
+*.secret
+
+# Local project config
+config.yaml
+configs/config.yaml
+configs/*.local.yaml
+configs/*.secret.yaml
+
+# Logs and generated reports
+*.log
+logs/
+report.md
+reports/
+traces/
+tmp/
+temp/
+
+# Keep sanitized test fixtures that are referenced by README examples.
+!testdata/
+!testdata/logs/
+!testdata/logs/*.log
+
+# Go build and test artifacts
+bin/
+build/
+dist/
+*.exe
+*.test
+*.out
+coverage.out
+coverage.html
+*.coverprofile
+*.prof
+*.pprof
+
+# Editor, OS, and local agent state
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*.swo
+.codex/
+.agents/
