@@ -8,5 +8,6 @@ import (
 type Input struct {
 	Goal      string
 	Diagnosis schema.Diagnosis
+	Plan      schema.Plan
 	Trace     []trace.Entry
 }

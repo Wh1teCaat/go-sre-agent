@@ -13,18 +13,21 @@ func TestRequestJSONUsesPlannerFieldNames(t *testing.T) {
 	data, err := json.Marshal(Request{
 		Goal: "诊断登录 500",
 		Step: 2,
+		TargetContext: map[string]any{
+			"backend_base_url": "http://localhost:8080",
+		},
 	})
 	if err != nil {
 		t.Fatalf("marshal request: %v", err)
 	}
 
 	text := string(data)
-	for _, want := range []string{`"goal"`, `"step"`, `"tools"`, `"observations"`} {
+	for _, want := range []string{`"goal"`, `"step"`, `"target_context"`, `"tools"`, `"observations"`} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("request json missing %s: %s", want, text)
 		}
 	}
-	for _, notWant := range []string{`"Goal"`, `"Step"`, `"Tools"`, `"Observations"`, `"Trace"`} {
+	for _, notWant := range []string{`"Goal"`, `"Step"`, `"TargetContext"`, `"Tools"`, `"Observations"`, `"Trace"`} {
 		if strings.Contains(text, notWant) {
 			t.Fatalf("request json contains exported field name %s: %s", notWant, text)
 		}
@@ -48,6 +51,9 @@ func TestActionPlannerBuildsGenericChatRequestAndParsesAction(t *testing.T) {
 	action, err := planner.NextAction(context.Background(), Request{
 		Goal: "只验证 planner 分层",
 		Step: 1,
+		TargetContext: map[string]any{
+			"backend_base_url": "http://localhost:8080",
+		},
 	})
 	if err != nil {
 		t.Fatalf("next action: %v", err)
@@ -71,7 +77,7 @@ func TestActionPlannerBuildsGenericChatRequestAndParsesAction(t *testing.T) {
 	if client.request.Messages[0].Role != RoleSystem {
 		t.Fatalf("first role = %q, want system", client.request.Messages[0].Role)
 	}
-	for _, want := range []string{"target_context", "login_url", "postgres_ping", "redis_ping", "websocket_check", "log_read"} {
+	for _, want := range []string{"plan", "coverage", "target_context", "memories", "historical hints only", "login_url", "postgres_ping", "postgres_check", "redis_ping", "websocket_check", "log_read", "中文", "do not finalize"} {
 		if !strings.Contains(client.request.Messages[0].Content, want) {
 			t.Fatalf("system prompt missing %q:\n%s", want, client.request.Messages[0].Content)
 		}
@@ -81,6 +87,9 @@ func TestActionPlannerBuildsGenericChatRequestAndParsesAction(t *testing.T) {
 	}
 	if !strings.Contains(client.request.Messages[1].Content, "只验证 planner 分层") {
 		t.Fatalf("user message missing goal: %q", client.request.Messages[1].Content)
+	}
+	if !strings.Contains(client.request.Messages[1].Content, `"target_context"`) {
+		t.Fatalf("user message missing target context: %q", client.request.Messages[1].Content)
 	}
 	if action.Type != schema.ActionTypeFinal {
 		t.Fatalf("action type = %q, want final", action.Type)

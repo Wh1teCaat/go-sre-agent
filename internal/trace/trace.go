@@ -6,12 +6,16 @@ import (
 	"github.com/y2/go-sre-agent/internal/schema"
 )
 
-// Entry 是一次工具调用的审计记录。
-// Result 会进入报告和下一轮 observation，Args/Duration/StartedAt 主要用于排查执行过程。
+// Entry 是一次已接受 action 的审计记录。
+// 只有 tool_call 的 Result 会进入下一轮 observation；plan/final 只保留决策元数据。
 type Entry struct {
 	Step           int
+	ActionType     string
 	ThoughtSummary string
 	ToolName       string
+	Model          string
+	LLMDuration    time.Duration
+	LLMAttempts    int
 	Args           map[string]any
 	Result         schema.Observation
 	Error          string

@@ -1,39 +1,24 @@
 package llm
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
-	"os"
 	"strings"
 )
-
-const (
-	DefaultOpenAICompatibleBaseURL = "https://api.openai.com/v1"
-	DefaultOpenAICompatibleModel   = "gpt-4o-mini"
-	DefaultLLMProvider             = "mock"
-)
-
-type OpenAICompatibleConfig struct {
-	Provider string
-	APIKey   string
-	BaseURL  string
-	Model    string
-}
 
 // OpenAICompatibleChatClient 把项目的通用 ChatClient 契约映射到
 // OpenAI-compatible /chat/completions HTTP API。它不理解 SRE action，
 // action 规划仍然是 ActionPlanner 的职责。
 type OpenAICompatibleChatClient struct {
-	config OpenAICompatibleConfig
+	config Config
 	client *http.Client
 }
 
-func NewOpenAICompatibleChatClient(config OpenAICompatibleConfig) *OpenAICompatibleChatClient {
+func NewOpenAICompatibleChatClient(config Config) *OpenAICompatibleChatClient {
 	if config.Provider == "" {
 		config.Provider = "openai_compatible"
 	}
@@ -106,81 +91,6 @@ func (c *OpenAICompatibleChatClient) Chat(ctx context.Context, request ChatReque
 	return ChatResponse{Content: content}, nil
 }
 
-// LoadOpenAICompatibleConfig 先读取可选的 .env 值，再允许真实进程环境变量覆盖它们。
-func LoadOpenAICompatibleConfig(path string) (OpenAICompatibleConfig, error) {
-	values := map[string]string{}
-	if path != "" {
-		fileValues, err := readDotEnv(path)
-		if err != nil {
-			return OpenAICompatibleConfig{}, err
-		}
-		for key, value := range fileValues {
-			values[key] = value
-		}
-	}
-
-	for _, key := range []string{"SRE_AGENT_LLM_PROVIDER", "OPENAI_API_KEY", "OPENAI_BASE_URL", "OPENAI_MODEL"} {
-		if value := os.Getenv(key); value != "" {
-			// 进程环境优先级高于 .env，方便 CI 或临时命令覆盖本地文件。
-			values[key] = value
-		}
-	}
-
-	return OpenAICompatibleConfigFromValues(values), nil
-}
-
-func OpenAICompatibleConfigFromValues(values map[string]string) OpenAICompatibleConfig {
-	cfg := OpenAICompatibleConfig{
-		Provider: DefaultLLMProvider,
-		BaseURL:  DefaultOpenAICompatibleBaseURL,
-		Model:    DefaultOpenAICompatibleModel,
-	}
-	if value := strings.TrimSpace(values["SRE_AGENT_LLM_PROVIDER"]); value != "" {
-		cfg.Provider = value
-	}
-	if value := strings.TrimSpace(values["OPENAI_API_KEY"]); value != "" {
-		cfg.APIKey = value
-	}
-	if value := strings.TrimSpace(values["OPENAI_BASE_URL"]); value != "" {
-		cfg.BaseURL = strings.TrimRight(value, "/")
-	}
-	if value := strings.TrimSpace(values["OPENAI_MODEL"]); value != "" {
-		cfg.Model = value
-	}
-	return cfg
-}
-
-func readDotEnv(path string) (map[string]string, error) {
-	file, err := os.Open(path)
-	if err != nil {
-		return nil, fmt.Errorf("open env file: %w", err)
-	}
-	defer file.Close()
-
-	values := map[string]string{}
-	scanner := bufio.NewScanner(file)
-	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
-		if line == "" || strings.HasPrefix(line, "#") {
-			continue
-		}
-		key, value, ok := strings.Cut(line, "=")
-		if !ok {
-			return nil, fmt.Errorf("invalid env line %q", line)
-		}
-		key = strings.TrimSpace(key)
-		value = strings.TrimSpace(value)
-		if key == "" {
-			return nil, fmt.Errorf("invalid empty env key in line %q", line)
-		}
-		values[key] = strings.Trim(value, `"'`)
-	}
-	if err := scanner.Err(); err != nil {
-		return nil, fmt.Errorf("scan env file: %w", err)
-	}
-	return values, nil
-}
-
 type openAIChatCompletionRequest struct {
 	Model          string                `json:"model"`
 	Messages       []openAIChatMessage   `json:"messages"`
@@ -205,7 +115,7 @@ type openAIChatChoice struct {
 	Message openAIChatMessage `json:"message"`
 }
 
-func buildOpenAIChatCompletionRequest(config OpenAICompatibleConfig, request ChatRequest) openAIChatCompletionRequest {
+func buildOpenAIChatCompletionRequest(config Config, request ChatRequest) openAIChatCompletionRequest {
 	model := request.Model
 	if strings.TrimSpace(model) == "" {
 		model = config.Model

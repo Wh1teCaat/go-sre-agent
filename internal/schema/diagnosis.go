@@ -12,9 +12,10 @@ type Evidence struct {
 
 // Diagnosis 是 final action 的业务内容：结论、证据引用和后续建议。
 type Diagnosis struct {
-	Summary         string     `json:"summary"`
-	Evidence        []Evidence `json:"evidence,omitempty"`
-	Recommendations []string   `json:"recommendations,omitempty"`
+	Summary         string         `json:"summary"`
+	Evidence        []Evidence     `json:"evidence,omitempty"`
+	Coverage        []CoverageItem `json:"coverage,omitempty"`
+	Recommendations []string       `json:"recommendations,omitempty"`
 }
 
 // EvidenceKey 用 step 和 tool 构造 evidence 与 trace 的匹配键。

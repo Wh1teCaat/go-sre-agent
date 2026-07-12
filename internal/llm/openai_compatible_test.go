@@ -13,7 +13,7 @@ import (
 )
 
 func TestLoadOpenAICompatibleConfigReadsDotEnv(t *testing.T) {
-	clearOpenAIEnv(t)
+	unsetLLMConfigEnv(t)
 	path := filepath.Join(t.TempDir(), ".env")
 	if err := os.WriteFile(path, []byte(`
 OPENAI_API_KEY=
@@ -24,7 +24,7 @@ SRE_AGENT_LLM_PROVIDER=openai_compatible
 		t.Fatalf("write env: %v", err)
 	}
 
-	cfg, err := LoadOpenAICompatibleConfig(path)
+	cfg, err := LoadConfig(path)
 	if err != nil {
 		t.Fatalf("load config: %v", err)
 	}
@@ -40,10 +40,33 @@ SRE_AGENT_LLM_PROVIDER=openai_compatible
 	}
 }
 
+func unsetLLMConfigEnv(t *testing.T) {
+	t.Helper()
+	for _, key := range []string{
+		"SRE_AGENT_LLM_PROVIDER",
+		"MIMO_API_KEY", "MIMO_BASE_URL", "MIMO_MODEL",
+		"OPENAI_API_KEY", "OPENAI_BASE_URL", "OPENAI_MODEL",
+		"OLLAMA_BASE_URL", "OLLAMA_MODEL",
+		"ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL", "ANTHROPIC_MODEL",
+	} {
+		value, existed := os.LookupEnv(key)
+		if err := os.Unsetenv(key); err != nil {
+			t.Fatalf("unset %s: %v", key, err)
+		}
+		t.Cleanup(func() {
+			if existed {
+				_ = os.Setenv(key, value)
+			} else {
+				_ = os.Unsetenv(key)
+			}
+		})
+	}
+}
+
 func TestLoadOpenAICompatibleConfigDefaultsModelToGPT4OMini(t *testing.T) {
 	clearOpenAIEnv(t)
 
-	cfg, err := LoadOpenAICompatibleConfig("")
+	cfg, err := LoadConfig("")
 	if err != nil {
 		t.Fatalf("load config: %v", err)
 	}
@@ -85,7 +108,7 @@ func TestOpenAICompatibleChatClientSendsChatRequestAndParsesContent(t *testing.T
 	}))
 	defer server.Close()
 
-	client := NewOpenAICompatibleChatClient(OpenAICompatibleConfig{
+	client := NewOpenAICompatibleChatClient(Config{
 		APIKey:  "test-key",
 		BaseURL: server.URL,
 		Model:   "gpt-4o-mini",
@@ -139,7 +162,7 @@ func TestOpenAICompatibleChatClientReturnsErrorForNon2xxResponse(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewOpenAICompatibleChatClient(OpenAICompatibleConfig{
+	client := NewOpenAICompatibleChatClient(Config{
 		APIKey:  "test-key",
 		BaseURL: server.URL,
 		Model:   "gpt-4o-mini",
@@ -160,7 +183,7 @@ func TestOpenAICompatibleChatClientReturnsErrorForNon2xxResponse(t *testing.T) {
 }
 
 func TestOpenAICompatibleChatClientRequiresAPIKey(t *testing.T) {
-	client := NewOpenAICompatibleChatClient(OpenAICompatibleConfig{
+	client := NewOpenAICompatibleChatClient(Config{
 		BaseURL: "https://api.openai.com/v1",
 		Model:   "gpt-4o-mini",
 	})
@@ -182,5 +205,42 @@ func clearOpenAIEnv(t *testing.T) {
 	t.Setenv("OPENAI_API_KEY", "")
 	t.Setenv("OPENAI_BASE_URL", "")
 	t.Setenv("OPENAI_MODEL", "")
+	t.Setenv("MIMO_API_KEY", "")
+	t.Setenv("MIMO_BASE_URL", "")
+	t.Setenv("MIMO_MODEL", "")
+	t.Setenv("OLLAMA_BASE_URL", "")
+	t.Setenv("OLLAMA_MODEL", "")
+	t.Setenv("ANTHROPIC_API_KEY", "")
+	t.Setenv("ANTHROPIC_BASE_URL", "")
+	t.Setenv("ANTHROPIC_MODEL", "")
 	t.Setenv("SRE_AGENT_LLM_PROVIDER", "")
+}
+
+func TestConfigSelectsMIMOAndProviderSpecificValues(t *testing.T) {
+	mimo := ConfigFromValues(map[string]string{
+		"SRE_AGENT_LLM_PROVIDER": "openai_compatible",
+		"MIMO_API_KEY":           "mimo-key",
+		"MIMO_BASE_URL":          "https://mimo.example/v1",
+		"OPENAI_API_KEY":         "openai-key",
+	})
+	if mimo.APIKey != "mimo-key" || mimo.BaseURL != "https://mimo.example/v1" {
+		t.Fatalf("mimo config = %#v", mimo)
+	}
+
+	ollama := ConfigFromValues(map[string]string{
+		"SRE_AGENT_LLM_PROVIDER": "ollama",
+		"OLLAMA_MODEL":           "qwen3:8b",
+	})
+	if ollama.APIKey != "ollama" || ollama.BaseURL != DefaultOllamaBaseURL || ollama.Model != "qwen3:8b" {
+		t.Fatalf("ollama config = %#v", ollama)
+	}
+
+	anthropic := ConfigFromValues(map[string]string{
+		"SRE_AGENT_LLM_PROVIDER": "anthropic",
+		"ANTHROPIC_API_KEY":      "claude-key",
+		"ANTHROPIC_MODEL":        "claude-test",
+	})
+	if anthropic.APIKey != "claude-key" || anthropic.BaseURL != DefaultAnthropicBaseURL || anthropic.Model != "claude-test" {
+		t.Fatalf("anthropic config = %#v", anthropic)
+	}
 }

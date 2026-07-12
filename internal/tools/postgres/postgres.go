@@ -17,13 +17,13 @@ import (
 	"github.com/y2/go-sre-agent/internal/tools"
 )
 
-const Name = "postgres_ping"
+const PingName = "postgres_ping"
 
-type Args struct {
+type PingArgs struct {
 	DSN string `json:"dsn"`
 }
 
-type Tool struct {
+type PingTool struct {
 	dialer *net.Dialer
 }
 
@@ -33,27 +33,27 @@ type endpoint struct {
 	database string
 }
 
-func New(dialer *net.Dialer) *Tool {
+func NewPing(dialer *net.Dialer) *PingTool {
 	if dialer == nil {
 		dialer = &net.Dialer{}
 	}
-	return &Tool{dialer: dialer}
+	return &PingTool{dialer: dialer}
 }
 
-func (t *Tool) Name() string {
-	return Name
+func (t *PingTool) Name() string {
+	return PingName
 }
 
-func (t *Tool) Description() string {
-	return Spec().Description
+func (t *PingTool) Description() string {
+	return PingSpec().Description
 }
 
-func (t *Tool) Schema() tools.ToolSchema {
-	return Spec().Schema
+func (t *PingTool) Schema() tools.ToolSchema {
+	return PingSpec().Schema
 }
 
-func (t *Tool) Run(ctx context.Context, rawArgs json.RawMessage) (schema.Observation, error) {
-	var args Args
+func (t *PingTool) Run(ctx context.Context, rawArgs json.RawMessage) (schema.Observation, error) {
+	var args PingArgs
 	if err := json.Unmarshal(rawArgs, &args); err != nil {
 		return schema.Observation{}, fmt.Errorf("decode postgres_ping args: %w", err)
 	}
@@ -85,7 +85,7 @@ func (t *Tool) Run(ctx context.Context, rawArgs json.RawMessage) (schema.Observa
 		latencyMS = 0
 	}
 	return schema.Observation{
-		Tool:    Name,
+		Tool:    PingName,
 		Summary: fmt.Sprintf("PostgreSQL %s responded with %s in %dms", target.addr, response, latencyMS),
 		Data: map[string]any{
 			"addr":            target.addr,
@@ -249,9 +249,9 @@ func applyConnDeadline(ctx context.Context, conn net.Conn) {
 	_ = conn.SetDeadline(deadline)
 }
 
-func Spec() tools.ToolSpec {
+func PingSpec() tools.ToolSpec {
 	return tools.ToolSpec{
-		Name:        Name,
+		Name:        PingName,
 		Description: "Open a PostgreSQL connection and perform a lightweight startup-message reachability check.",
 		Schema: tools.ToolSchema{
 			Properties: map[string]tools.ArgSpec{

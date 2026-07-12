@@ -66,6 +66,53 @@ func TestValidatorAllowsFinalAction(t *testing.T) {
 	}
 }
 
+func TestValidatorAllowsPlanAction(t *testing.T) {
+	validator := NewValidator(Config{})
+	action := schema.Action{
+		Type: schema.ActionTypePlan,
+		Plan: &schema.Plan{
+			Items: []schema.PlanItem{
+				{ID: "backend", Goal: "检查后端服务是否存活", Status: "pending"},
+			},
+		},
+	}
+
+	if err := validator.ValidateAction(action); err != nil {
+		t.Fatalf("validate plan action: %v", err)
+	}
+}
+
+func TestValidatorRejectsInvalidPlanAction(t *testing.T) {
+	validator := NewValidator(Config{})
+	action := schema.Action{
+		Type: schema.ActionTypePlan,
+		Plan: &schema.Plan{
+			Items: []schema.PlanItem{
+				{ID: "", Goal: "检查后端服务是否存活"},
+			},
+		},
+	}
+
+	err := validator.ValidateAction(action)
+	if err == nil {
+		t.Fatal("validate plan action succeeded, want item id error")
+	}
+	if !strings.Contains(err.Error(), "plan item requires id") {
+		t.Fatalf("error = %q, want plan item id error", err.Error())
+	}
+}
+
+func TestValidatorRejectsEmptyPlanAction(t *testing.T) {
+	validator := NewValidator(Config{})
+	err := validator.ValidateAction(schema.Action{
+		Type: schema.ActionTypePlan,
+		Plan: &schema.Plan{},
+	})
+	if err == nil || !strings.Contains(err.Error(), "plan action requires at least one item") {
+		t.Fatalf("error = %v, want empty plan error", err)
+	}
+}
+
 func TestValidatorRejectsFinalActionWithoutSummary(t *testing.T) {
 	validator := NewValidator(Config{
 		MaxSteps:    3,
@@ -85,6 +132,121 @@ func TestValidatorRejectsFinalActionWithoutSummary(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "final diagnosis requires summary") {
 		t.Fatalf("error = %q, want summary error", err.Error())
+	}
+}
+
+func TestValidatorRequiresCoverageForEveryPlanItem(t *testing.T) {
+	validator := NewValidator(Config{})
+	diagnosis := &schema.Diagnosis{
+		Summary: "后端正常",
+		Evidence: []schema.Evidence{
+			{Step: 1, Tool: "http_check"},
+		},
+		Coverage: []schema.CoverageItem{
+			{PlanItemID: "backend", Status: "done"},
+		},
+	}
+	plan := schema.Plan{
+		Items: []schema.PlanItem{
+			{ID: "backend", Goal: "检查后端"},
+			{ID: "redis", Goal: "检查 Redis"},
+		},
+	}
+
+	err := validator.ValidateFinalCoverage(diagnosis, plan)
+	if err == nil {
+		t.Fatal("validate coverage succeeded, want missing plan item error")
+	}
+	if !strings.Contains(err.Error(), `final coverage missing plan item "redis"`) {
+		t.Fatalf("error = %q, want missing redis coverage", err.Error())
+	}
+}
+
+func TestValidatorRejectsCoverageWithoutFinalEvidenceReference(t *testing.T) {
+	validator := NewValidator(Config{})
+	diagnosis := &schema.Diagnosis{
+		Summary: "后端正常",
+		Evidence: []schema.Evidence{
+			{Step: 1, Tool: "http_check"},
+		},
+		Coverage: []schema.CoverageItem{
+			{
+				PlanItemID: "backend",
+				Status:     "done",
+				Evidence: []schema.Evidence{
+					{Step: 2, Tool: "redis_ping"},
+				},
+			},
+		},
+	}
+	plan := schema.Plan{Items: []schema.PlanItem{{ID: "backend", Goal: "检查后端"}}}
+
+	err := validator.ValidateFinalCoverage(diagnosis, plan)
+	if err == nil || !strings.Contains(err.Error(), "references evidence not present in final evidence") {
+		t.Fatalf("error = %v, want coverage evidence reference error", err)
+	}
+}
+
+func TestValidatorRejectsCompletedCoverageWithoutEvidence(t *testing.T) {
+	validator := NewValidator(Config{})
+	plan := schema.Plan{Items: []schema.PlanItem{{ID: "backend", Goal: "检查后端"}}}
+	diagnosis := &schema.Diagnosis{
+		Summary:  "后端正常",
+		Coverage: []schema.CoverageItem{{PlanItemID: "backend", Status: "done"}},
+	}
+
+	err := validator.ValidateFinalCoverage(diagnosis, plan)
+	if err == nil || !strings.Contains(err.Error(), "requires evidence") {
+		t.Fatalf("error = %v, want completed coverage evidence error", err)
+	}
+}
+
+func TestValidatorRejectsDuplicateOrUnknownCoverageItems(t *testing.T) {
+	validator := NewValidator(Config{})
+	plan := schema.Plan{Items: []schema.PlanItem{{ID: "backend", Goal: "检查后端"}}}
+
+	for name, coverage := range map[string][]schema.CoverageItem{
+		"duplicate": {
+			{PlanItemID: "backend", Status: "insufficient"},
+			{PlanItemID: "backend", Status: "insufficient"},
+		},
+		"unknown": {
+			{PlanItemID: "redis", Status: "insufficient"},
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			err := validator.ValidateFinalCoverage(&schema.Diagnosis{Summary: "证据不足", Coverage: coverage}, plan)
+			if err == nil {
+				t.Fatal("validate coverage succeeded, want error")
+			}
+		})
+	}
+}
+
+func TestValidatorAllowsCoveredPlanItems(t *testing.T) {
+	validator := NewValidator(Config{})
+	diagnosis := &schema.Diagnosis{
+		Summary: "后端正常",
+		Evidence: []schema.Evidence{
+			{Step: 1, Tool: "http_check"},
+		},
+		Coverage: []schema.CoverageItem{
+			{
+				PlanItemID: "backend",
+				Status:     "done",
+				Evidence: []schema.Evidence{
+					{Step: 1, Tool: "http_check"},
+				},
+			},
+		},
+	}
+	plan := schema.Plan{
+		Items: []schema.PlanItem{
+			{ID: "backend", Goal: "检查后端"},
+		},
+	}
+	if err := validator.ValidateFinalCoverage(diagnosis, plan); err != nil {
+		t.Fatalf("validate coverage: %v", err)
 	}
 }
 

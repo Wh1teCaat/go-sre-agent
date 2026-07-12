@@ -43,6 +43,23 @@ func Markdown(input Input) string {
 		b.WriteString("\n")
 	}
 
+	if len(input.Diagnosis.Coverage) > 0 {
+		b.WriteString("## Plan Coverage\n\n")
+		for _, item := range input.Diagnosis.Coverage {
+			label := planItemGoal(input.Plan, item.PlanItemID)
+			if label == "" {
+				label = item.PlanItemID
+			}
+			b.WriteString(fmt.Sprintf("- `%s` %s: %s", item.Status, item.PlanItemID, label))
+			if item.Note != "" {
+				b.WriteString(" - ")
+				b.WriteString(item.Note)
+			}
+			b.WriteString("\n")
+		}
+		b.WriteString("\n")
+	}
+
 	if len(input.Trace) > 0 {
 		b.WriteString("## Trace\n\n")
 		for _, entry := range input.Trace {
@@ -50,7 +67,15 @@ func Markdown(input Input) string {
 			if entry.Error != "" {
 				status = entry.Error
 			}
-			b.WriteString(fmt.Sprintf("- Step %d `%s` (%s): %s\n", entry.Step, entry.ToolName, entry.Duration, status))
+			label := entry.ToolName
+			if label == "" {
+				label = entry.ActionType
+			}
+			b.WriteString(fmt.Sprintf("- Step %d `%s` (%s): %s", entry.Step, label, entry.Duration, status))
+			if entry.Model != "" || entry.LLMAttempts > 0 {
+				b.WriteString(fmt.Sprintf(" [model=%s, llm=%s, attempts=%d]", entry.Model, entry.LLMDuration, entry.LLMAttempts))
+			}
+			b.WriteString("\n")
 		}
 		b.WriteString("\n")
 	}
@@ -65,6 +90,15 @@ func Markdown(input Input) string {
 	}
 
 	return b.String()
+}
+
+func planItemGoal(plan schema.Plan, id string) string {
+	for _, item := range plan.Items {
+		if item.ID == id {
+			return item.Goal
+		}
+	}
+	return ""
 }
 
 // traceBackedEvidence 只保留能在 trace 中找到同 step/tool 的证据。

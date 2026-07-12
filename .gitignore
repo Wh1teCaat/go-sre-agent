@@ -23,6 +23,7 @@ logs/
 report.md
 reports/
 traces/
+.runs/
 tmp/
 temp/
 
@@ -43,6 +44,7 @@ coverage.html
 *.coverprofile
 *.prof
 *.pprof
+/sre-agent
 
 # Editor, OS, and local agent state
 .DS_Store

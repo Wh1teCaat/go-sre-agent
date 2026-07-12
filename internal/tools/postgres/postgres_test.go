@@ -34,16 +34,16 @@ func TestPostgresPingSendsStartupAndReturnsServerResponse(t *testing.T) {
 		_, _ = conn.Write([]byte{'R', 0, 0, 0, 8, 0, 0, 0, 0})
 	})
 
-	tool := New(nil)
-	observation, err := tool.Run(context.Background(), mustPostgresArgs(t, Args{
+	tool := NewPing(nil)
+	observation, err := tool.Run(context.Background(), mustPostgresArgs(t, PingArgs{
 		DSN: "postgres://app:secret@" + addr + "/chat_proj?sslmode=disable",
 	}))
 	if err != nil {
 		t.Fatalf("run postgres ping: %v", err)
 	}
 
-	if observation.Tool != Name {
-		t.Fatalf("tool = %q, want %q", observation.Tool, Name)
+	if observation.Tool != PingName {
+		t.Fatalf("tool = %q, want %q", observation.Tool, PingName)
 	}
 	if observation.Data["addr"] != addr {
 		t.Fatalf("addr = %#v, want %q", observation.Data["addr"], addr)
@@ -54,9 +54,9 @@ func TestPostgresPingSendsStartupAndReturnsServerResponse(t *testing.T) {
 }
 
 func TestPostgresPingRejectsMissingDSN(t *testing.T) {
-	tool := New(nil)
+	tool := NewPing(nil)
 
-	_, err := tool.Run(context.Background(), mustPostgresArgs(t, Args{}))
+	_, err := tool.Run(context.Background(), mustPostgresArgs(t, PingArgs{}))
 	if err == nil {
 		t.Fatal("expected missing dsn to fail")
 	}
@@ -84,7 +84,7 @@ func startFakePostgres(t *testing.T, handler func(net.Conn)) string {
 	return listener.Addr().String()
 }
 
-func mustPostgresArgs(t *testing.T, args Args) json.RawMessage {
+func mustPostgresArgs(t *testing.T, args PingArgs) json.RawMessage {
 	t.Helper()
 	data, err := json.Marshal(args)
 	if err != nil {

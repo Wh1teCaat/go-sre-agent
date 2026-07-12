@@ -32,6 +32,24 @@ func TestLogReadReturnsLatestLinesFromAllowedPath(t *testing.T) {
 	}
 }
 
+func TestLogReadCapsResultAtConfiguredMaxLines(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "app.log")
+	writeLog(t, path, "line 1\nline 2\nline 3\nline 4\n")
+
+	observation, err := New([]string{dir}, 2).Run(context.Background(), mustLogArgs(t, Args{
+		Path:  path,
+		Lines: 100,
+	}))
+	if err != nil {
+		t.Fatalf("run log read: %v", err)
+	}
+	lines := observation.Data["lines"].([]string)
+	if len(lines) != 2 || lines[0] != "line 3" || lines[1] != "line 4" {
+		t.Fatalf("lines = %#v, want configured latest two", lines)
+	}
+}
+
 func TestLogReadFiltersKeywordBeforeTakingLatestMatches(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "app.log")
@@ -53,6 +71,26 @@ func TestLogReadFiltersKeywordBeforeTakingLatestMatches(t *testing.T) {
 	}
 	if lines[0] != "ERROR redis down" {
 		t.Fatalf("lines = %#v, want latest matching error", lines)
+	}
+}
+
+func TestLogReadFiltersMultipleKeywordsInOneRead(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "app.log")
+	writeLog(t, path, "INFO start\nERROR db down\npanic: crashed\nINFO login ok\n")
+
+	observation, err := New([]string{dir}, 1000).Run(context.Background(), mustLogArgs(t, Args{
+		Path:     path,
+		Lines:    10,
+		Keywords: []string{"ERROR", "panic"},
+	}))
+	if err != nil {
+		t.Fatalf("run log read: %v", err)
+	}
+
+	lines := observation.Data["lines"].([]string)
+	if len(lines) != 2 || lines[0] != "ERROR db down" || lines[1] != "panic: crashed" {
+		t.Fatalf("lines = %#v, want ERROR and panic lines", lines)
 	}
 }
 

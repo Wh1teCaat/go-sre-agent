@@ -10,19 +10,27 @@ import (
 
 type Config struct {
 	Agent   AgentConfig
+	Paths   PathsConfig
 	Policy  PolicyConfig
 	Targets TargetConfig
 }
 
 type AgentConfig struct {
 	MaxSteps    int
+	LLMTimeout  time.Duration
 	ToolTimeout time.Duration
 }
 
 type PolicyConfig struct {
-	ToolAllowlist  []string
-	AllowedLogDirs []string
-	AllowedHosts   []string
+	ToolAllowlist     []string
+	AllowedLogDirs    []string
+	AllowedHosts      []string
+	AllowedContainers []string
+}
+
+type PathsConfig struct {
+	RunDir    string
+	ReportDir string
 }
 
 type TargetConfig struct {
@@ -36,13 +44,19 @@ type TargetConfig struct {
 type rawConfig struct {
 	Agent struct {
 		MaxSteps    int    `yaml:"max_steps"`
+		LLMTimeout  string `yaml:"llm_timeout"`
 		ToolTimeout string `yaml:"tool_timeout"`
 	} `yaml:"agent"`
 	Policy struct {
-		ToolAllowlist  []string `yaml:"tool_allowlist"`
-		AllowedLogDirs []string `yaml:"allowed_log_dirs"`
-		AllowedHosts   []string `yaml:"allowed_hosts"`
+		ToolAllowlist     []string `yaml:"tool_allowlist"`
+		AllowedLogDirs    []string `yaml:"allowed_log_dirs"`
+		AllowedHosts      []string `yaml:"allowed_hosts"`
+		AllowedContainers []string `yaml:"allowed_containers"`
 	} `yaml:"policy"`
+	Paths struct {
+		RunDir    string `yaml:"run_dir"`
+		ReportDir string `yaml:"report_dir"`
+	} `yaml:"paths"`
 	Targets struct {
 		BackendBaseURL string `yaml:"backend_base_url"`
 		PostgresDSN    string `yaml:"postgres_dsn"`
@@ -57,7 +71,8 @@ type rawConfig struct {
 func Default() Config {
 	return Config{
 		Agent: AgentConfig{
-			MaxSteps:    8,
+			MaxSteps:    12,
+			LLMTimeout:  30 * time.Second,
 			ToolTimeout: 5 * time.Second,
 		},
 		Policy: PolicyConfig{
@@ -66,19 +81,32 @@ func Default() Config {
 				"log_read",
 				"redis_ping",
 				"postgres_ping",
+				"postgres_check",
 				"websocket_check",
+				"docker_ps",
+				"docker_inspect",
+				"docker_logs",
 			},
 			AllowedHosts: []string{
 				"localhost",
 				"127.0.0.1",
 				"::1",
 			},
+			AllowedContainers: []string{
+				"chat-backend",
+				"chat-frontend",
+				"chat-postgres",
+				"chat-redis-compose",
+			},
+		},
+		Paths: PathsConfig{
+			RunDir: ".runs",
 		},
 		Targets: TargetConfig{
 			BackendBaseURL: "http://localhost:8080",
 			PostgresDSN:    "postgres://postgres:postgres@localhost:5432/chat_proj?sslmode=disable",
 			RedisAddr:      "localhost:6379",
-			WebSocketURL:   "ws://localhost:8080/ws",
+			WebSocketURL:   "ws://localhost:8080/v1/ws",
 			LogFile:        "testdata/logs/chat_proj_error.log",
 		},
 	}
@@ -101,6 +129,13 @@ func Load(path string) (Config, error) {
 	if raw.Agent.MaxSteps > 0 {
 		cfg.Agent.MaxSteps = raw.Agent.MaxSteps
 	}
+	if raw.Agent.LLMTimeout != "" {
+		duration, err := time.ParseDuration(raw.Agent.LLMTimeout)
+		if err != nil {
+			return Config{}, fmt.Errorf("parse agent.llm_timeout: %w", err)
+		}
+		cfg.Agent.LLMTimeout = duration
+	}
 	if raw.Agent.ToolTimeout != "" {
 		duration, err := time.ParseDuration(raw.Agent.ToolTimeout)
 		if err != nil {
@@ -116,6 +151,15 @@ func Load(path string) (Config, error) {
 	}
 	if len(raw.Policy.AllowedHosts) > 0 {
 		cfg.Policy.AllowedHosts = raw.Policy.AllowedHosts
+	}
+	if len(raw.Policy.AllowedContainers) > 0 {
+		cfg.Policy.AllowedContainers = raw.Policy.AllowedContainers
+	}
+	if raw.Paths.RunDir != "" {
+		cfg.Paths.RunDir = raw.Paths.RunDir
+	}
+	if raw.Paths.ReportDir != "" {
+		cfg.Paths.ReportDir = raw.Paths.ReportDir
 	}
 	if raw.Targets.BackendBaseURL != "" {
 		cfg.Targets.BackendBaseURL = raw.Targets.BackendBaseURL

@@ -12,9 +12,11 @@ import (
 )
 
 // ValidateAction 校验 LLM 输出的顶层 action 形态。
-// 它只接受 final 和 tool_call，避免模型输出自然语言或未定义动作直接进入 runtime。
+// 它只接受 plan、final 和 tool_call，避免模型输出自然语言或未定义动作直接进入 runtime。
 func (v *Validator) ValidateAction(action schema.Action) error {
 	switch action.Type {
+	case schema.ActionTypePlan:
+		return validatePlanAction(action)
 	case schema.ActionTypeFinal:
 		if action.Final == nil {
 			return fmt.Errorf("final action requires diagnosis")
@@ -30,6 +32,37 @@ func (v *Validator) ValidateAction(action schema.Action) error {
 	}
 }
 
+func validatePlanAction(action schema.Action) error {
+	if action.Plan == nil {
+		return fmt.Errorf("plan action requires plan")
+	}
+	if len(action.Plan.Items) == 0 {
+		return fmt.Errorf("plan action requires at least one item")
+	}
+	seen := map[string]struct{}{}
+	for _, item := range action.Plan.Items {
+		id := strings.TrimSpace(item.ID)
+		if id == "" {
+			return fmt.Errorf("plan item requires id")
+		}
+		if _, ok := seen[id]; ok {
+			return fmt.Errorf("duplicate plan item id %q", id)
+		}
+		seen[id] = struct{}{}
+		if strings.TrimSpace(item.Goal) == "" {
+			return fmt.Errorf("plan item %q requires goal", id)
+		}
+		if item.Status != "" && !validPlanStatus(item.Status) {
+			return fmt.Errorf("plan item %q has unsupported status %q", id, item.Status)
+		}
+	}
+	return nil
+}
+
+func validPlanStatus(status string) bool {
+	return status == "pending" || status == "done" || status == "blocked"
+}
+
 // ValidateFinalEvidence 校验最终诊断引用的 evidence 是否真实来自本次 trace。
 // 这是 policy 层的可信度约束：runtime 负责收集 trace，policy 负责判定模型输出能否被接受。
 func (v *Validator) ValidateFinalEvidence(diagnosis *schema.Diagnosis, entries []trace.Entry) error {
@@ -40,16 +73,76 @@ func (v *Validator) ValidateFinalEvidence(diagnosis *schema.Diagnosis, entries [
 		return fmt.Errorf("final diagnosis requires evidence when trace exists")
 	}
 
+	// 只用 step/tool 匹配，不比较模型写的 summary。
+	// summary 最终会由报告层从真实 trace 中回填，避免模型改写证据内容。
+	return validateEvidenceRefs(diagnosis.Evidence, entries)
+}
+
+// ValidateFinalCoverage 校验 final 是否覆盖当前 plan。
+// 证据真实性统一交给 ValidateFinalEvidence，避免 coverage/evidence 两处重复校验 trace。
+func (v *Validator) ValidateFinalCoverage(diagnosis *schema.Diagnosis, plan schema.Plan) error {
+	if diagnosis == nil || len(plan.Items) == 0 {
+		return nil
+	}
+	planIDs := make(map[string]struct{}, len(plan.Items))
+	for _, item := range plan.Items {
+		planIDs[item.ID] = struct{}{}
+	}
+	covered := make(map[string]schema.CoverageItem, len(diagnosis.Coverage))
+	for _, item := range diagnosis.Coverage {
+		id := strings.TrimSpace(item.PlanItemID)
+		if id == "" {
+			return fmt.Errorf("coverage item requires plan_item_id")
+		}
+		if !validCoverageStatus(item.Status) {
+			return fmt.Errorf("coverage item %q has unsupported status %q", id, item.Status)
+		}
+		if _, ok := planIDs[id]; !ok {
+			return fmt.Errorf("coverage item %q is not in current plan", id)
+		}
+		if _, ok := covered[id]; ok {
+			return fmt.Errorf("duplicate coverage item %q", id)
+		}
+		covered[id] = item
+	}
+	for _, item := range plan.Items {
+		if _, ok := covered[item.ID]; !ok {
+			return fmt.Errorf("final coverage missing plan item %q", item.ID)
+		}
+	}
+
+	// coverage 只引用 final.evidence；后者再由 ValidateFinalEvidence 统一回查 trace。
+	// 因此这里能约束每个已完成/阻塞项有证据，又不会重复验证 trace。
+	finalEvidence := make(map[string]struct{}, len(diagnosis.Evidence))
+	for _, evidence := range diagnosis.Evidence {
+		finalEvidence[schema.EvidenceKey(evidence.Step, evidence.Tool)] = struct{}{}
+	}
+	for _, item := range diagnosis.Coverage {
+		if item.Status != "insufficient" && len(item.Evidence) == 0 {
+			return fmt.Errorf("coverage item %q with status %q requires evidence", item.PlanItemID, item.Status)
+		}
+		for _, evidence := range item.Evidence {
+			if _, ok := finalEvidence[schema.EvidenceKey(evidence.Step, evidence.Tool)]; !ok {
+				return fmt.Errorf("coverage item %q references evidence not present in final evidence", item.PlanItemID)
+			}
+		}
+	}
+	return nil
+}
+
+func validCoverageStatus(status string) bool {
+	return status == "done" || status == "blocked" || status == "insufficient"
+}
+
+func validateEvidenceRefs(evidence []schema.Evidence, entries []trace.Entry) error {
 	traceEvidence := make(map[string]struct{}, len(entries))
 	for _, entry := range entries {
-		// 只用 step/tool 匹配，不比较模型写的 summary。
-		// summary 最终会由报告层从真实 trace 中回填，避免模型改写证据内容。
 		traceEvidence[schema.EvidenceKey(entry.Step, entry.ToolName)] = struct{}{}
 	}
-	for _, evidence := range diagnosis.Evidence {
-		key := schema.EvidenceKey(evidence.Step, evidence.Tool)
+	for _, item := range evidence {
+		key := schema.EvidenceKey(item.Step, item.Tool)
 		if _, ok := traceEvidence[key]; !ok {
-			return fmt.Errorf("evidence step %d tool %q has no matching trace entry", evidence.Step, evidence.Tool)
+			return fmt.Errorf("evidence step %d tool %q has no matching trace entry", item.Step, item.Tool)
 		}
 	}
 	return nil

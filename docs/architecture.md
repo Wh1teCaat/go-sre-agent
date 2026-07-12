@@ -5,7 +5,7 @@
 ## 模块
 
 - `internal/agent`: runtime loop, state, prompt boundary, execution boundary.
-- `internal/llm`: provider interface, action planner, generic chat client types, mock provider, and OpenAI-compatible chat client.
+- `internal/llm`: provider interface, action planner, generic chat types/config, mock provider, OpenAI-compatible/Ollama client, and Anthropic Messages client.
 - `internal/tools`: tool interface, registry, tool specs, and concrete tool packages.
 - `internal/policy`: action validation, tool schema arg validation, max-step policy, allowlist and timeout settings.
 - `internal/trace`: per-step execution trace storage.

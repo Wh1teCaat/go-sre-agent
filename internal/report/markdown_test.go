@@ -78,3 +78,27 @@ func TestMarkdownCanUseTraceErrorAsEvidence(t *testing.T) {
 		t.Fatalf("markdown contains model evidence instead of trace error:\n%s", markdown)
 	}
 }
+
+func TestMarkdownShowsPlanCoverage(t *testing.T) {
+	markdown := Markdown(Input{
+		Goal: "检查后端",
+		Plan: schema.Plan{
+			Items: []schema.PlanItem{
+				{ID: "backend", Goal: "检查后端服务是否存活"},
+			},
+		},
+		Diagnosis: schema.Diagnosis{
+			Summary: "后端有响应",
+			Coverage: []schema.CoverageItem{
+				{PlanItemID: "backend", Status: "done", Note: "HTTP 检查已完成"},
+			},
+		},
+	})
+
+	if !strings.Contains(markdown, "## Plan Coverage") {
+		t.Fatalf("markdown missing plan coverage:\n%s", markdown)
+	}
+	if !strings.Contains(markdown, "- `done` backend: 检查后端服务是否存活 - HTTP 检查已完成") {
+		t.Fatalf("markdown missing coverage item:\n%s", markdown)
+	}
+}

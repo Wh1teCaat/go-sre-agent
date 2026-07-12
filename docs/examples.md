@@ -24,7 +24,7 @@ sre-agent diagnose \
   --goal "仅验证真实 ActionPlanner 和 ChatClient 接入，不调用工具，直接生成 final 诊断"
 ```
 
-当 `.env` 设置了 `SRE_AGENT_LLM_PROVIDER=openai_compatible` 时，这条路径会使用 `ActionPlanner` 和配置的 OpenAI-compatible endpoint。想跑本地固定链路时，加上 `--mock-scenario skeleton`。
+当 `.env` 设置了真实 provider 时，这条路径会使用 `ActionPlanner` 和对应 ChatClient。想跑本地固定链路时，加上 `--mock-scenario skeleton`。
 
 ## 登录接口 500
 

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 )
@@ -108,6 +109,77 @@ func TestHTTPCheckRejectsDisallowedHostBeforeRequest(t *testing.T) {
 	if !strings.Contains(err.Error(), `host "example.com" is not allowed`) {
 		t.Fatalf("error = %q, want disallowed host", err.Error())
 	}
+}
+
+func TestHTTPCheckAllowsOnlyConfiguredPOSTURL(t *testing.T) {
+	requests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		requests++
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	tool := NewWithPolicy(nil, 64, nil, []string{server.URL + "/v1/user/login"})
+	if _, err := tool.Run(context.Background(), mustArgs(t, Args{
+		URL:    server.URL + "/v1/user/login",
+		Method: http.MethodPost,
+	})); err != nil {
+		t.Fatalf("configured login POST failed: %v", err)
+	}
+	_, err := tool.Run(context.Background(), mustArgs(t, Args{
+		URL:    server.URL + "/v1/user/delete",
+		Method: http.MethodDelete,
+	}))
+	if err == nil || !strings.Contains(err.Error(), `http method "DELETE" is not allowed`) {
+		t.Fatalf("error = %v, want unsafe method error", err)
+	}
+	_, err = tool.Run(context.Background(), mustArgs(t, Args{
+		URL:    server.URL + "/v1/user/create",
+		Method: http.MethodPost,
+	}))
+	if err == nil || !strings.Contains(err.Error(), "POST url") {
+		t.Fatalf("error = %v, want unconfigured POST error", err)
+	}
+	if requests != 1 {
+		t.Fatalf("requests = %d, want only configured POST to reach server", requests)
+	}
+}
+
+func TestHTTPCheckRejectsRedirectToDisallowedHost(t *testing.T) {
+	targetReached := false
+	var server *httptest.Server
+	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/redirect" {
+			target, err := url.Parse(serverURLWithHost(server.URL, "localhost") + "/target")
+			if err != nil {
+				t.Fatalf("parse redirect target: %v", err)
+			}
+			http.Redirect(w, r, target.String(), http.StatusFound)
+			return
+		}
+		targetReached = true
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	parsed, err := url.Parse(server.URL)
+	if err != nil {
+		t.Fatalf("parse server url: %v", err)
+	}
+	tool := NewWithAllowedHosts(nil, 64, []string{parsed.Hostname()})
+	_, err = tool.Run(context.Background(), mustArgs(t, Args{URL: server.URL + "/redirect"}))
+	if err == nil || !strings.Contains(err.Error(), `host "localhost" is not allowed`) {
+		t.Fatalf("error = %v, want disallowed redirect host", err)
+	}
+	if targetReached {
+		t.Fatal("redirect target was reached")
+	}
+}
+
+func serverURLWithHost(rawURL string, host string) string {
+	parsed, _ := url.Parse(rawURL)
+	parsed.Host = host + ":" + parsed.Port()
+	return parsed.String()
 }
 
 func TestHTTPCheckSchemaDescribesOptionalHeadersAndBody(t *testing.T) {

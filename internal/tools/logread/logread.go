@@ -16,9 +16,10 @@ import (
 const Name = "log_read"
 
 type Args struct {
-	Path    string `json:"path"`
-	Lines   int    `json:"lines,omitempty"`
-	Keyword string `json:"keyword,omitempty"`
+	Path     string   `json:"path"`
+	Lines    int      `json:"lines,omitempty"`
+	Keyword  string   `json:"keyword,omitempty"`
+	Keywords []string `json:"keywords,omitempty"`
 }
 
 type Tool struct {
@@ -90,21 +91,19 @@ func (t *Tool) Run(ctx context.Context, rawArgs json.RawMessage) (schema.Observa
 		limit = t.maxLines
 	}
 
-	lines, err := readLines(path)
+	keywords := normalizedKeywords(args.Keyword, args.Keywords)
+	lines, err := readLatestLines(ctx, path, limit, keywords)
 	if err != nil {
 		return schema.Observation{}, err
 	}
-	if args.Keyword != "" {
-		// 先按关键字过滤，再取尾部 N 行，语义是“最近 N 条匹配日志”。
-		lines = filterLines(lines, args.Keyword)
-	}
-	lines = tail(lines, limit)
 	// 日志内容会写入 observation，后续可能进入 prompt 和报告，因此必须在工具层脱敏。
 	lines = tools.RedactSensitiveLines(lines)
 
 	summary := fmt.Sprintf("read %d log lines from %s", len(lines), path)
-	if args.Keyword != "" {
-		summary = fmt.Sprintf("read %d log lines matching %q from %s", len(lines), args.Keyword, path)
+	if len(keywords) == 1 {
+		summary = fmt.Sprintf("read %d log lines matching %q from %s", len(lines), keywords[0], path)
+	} else if len(keywords) > 1 {
+		summary = fmt.Sprintf("read %d log lines matching %q from %s", len(lines), keywords, path)
 	}
 
 	return schema.Observation{
@@ -114,7 +113,7 @@ func (t *Tool) Run(ctx context.Context, rawArgs json.RawMessage) (schema.Observa
 			"path":       path,
 			"lines":      lines,
 			"lines_read": len(lines),
-			"keyword":    args.Keyword,
+			"keywords":   keywords,
 		},
 	}, nil
 }
@@ -155,7 +154,8 @@ func isInsideDir(path string, dir string) bool {
 	return rel == "." || (rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)))
 }
 
-func readLines(path string) ([]string, error) {
+// readLatestLines 扫描文件时只保留最后 limit 条匹配行，避免大日志占满内存。
+func readLatestLines(ctx context.Context, path string, limit int, keywords []string) ([]string, error) {
 	file, err := os.Open(path)
 	if err != nil {
 		return nil, fmt.Errorf("open log file: %w", err)
@@ -165,42 +165,73 @@ func readLines(path string) ([]string, error) {
 	scanner := bufio.NewScanner(file)
 	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 
-	var lines []string
+	ring := make([]string, limit)
+	matched := 0
 	for scanner.Scan() {
-		lines = append(lines, scanner.Text())
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		default:
+		}
+		line := scanner.Text()
+		if !matchesAnyKeyword(line, keywords) {
+			continue
+		}
+		ring[matched%limit] = line
+		matched++
 	}
 	if err := scanner.Err(); err != nil {
 		return nil, fmt.Errorf("scan log file: %w", err)
 	}
+
+	size := min(matched, limit)
+	lines := make([]string, size)
+	start := 0
+	if matched > limit {
+		start = matched % limit
+	}
+	for i := range lines {
+		lines[i] = ring[(start+i)%limit]
+	}
 	return lines, nil
 }
 
-func filterLines(lines []string, keyword string) []string {
-	filtered := make([]string, 0, len(lines))
-	for _, line := range lines {
-		if strings.Contains(line, keyword) {
-			filtered = append(filtered, line)
+func normalizedKeywords(keyword string, keywords []string) []string {
+	all := append([]string(nil), keywords...)
+	if keyword != "" {
+		all = append(all, keyword)
+	}
+	result := all[:0]
+	for _, item := range all {
+		if item = strings.TrimSpace(item); item != "" {
+			result = append(result, item)
 		}
 	}
-	return filtered
+	return result
 }
 
-func tail(lines []string, limit int) []string {
-	if limit >= len(lines) {
-		return lines
+func matchesAnyKeyword(line string, keywords []string) bool {
+	if len(keywords) == 0 {
+		return true
 	}
-	return lines[len(lines)-limit:]
+	for _, keyword := range keywords {
+		if strings.Contains(line, keyword) {
+			return true
+		}
+	}
+	return false
 }
 
 func Spec() tools.ToolSpec {
 	return tools.ToolSpec{
 		Name:        Name,
-		Description: "Read the latest lines from an allowed log file with optional keyword filtering.",
+		Description: "Read the latest lines from an allowed log file with optional single or multiple keyword filtering.",
 		Schema: tools.ToolSchema{
 			Properties: map[string]tools.ArgSpec{
-				"path":    {Type: "string", Required: true, Description: "Log file path under an allowed directory."},
-				"lines":   {Type: "number", Description: "Number of latest lines to read."},
-				"keyword": {Type: "string", Description: "Optional keyword filter."},
+				"path":     {Type: "string", Required: true, Description: "Log file path under an allowed directory."},
+				"lines":    {Type: "number", Description: "Number of latest lines to read."},
+				"keyword":  {Type: "string", Description: "Optional keyword filter."},
+				"keywords": {Type: "array", Description: "Optional keyword filters; a line matches when it contains any keyword."},
 			},
 		},
 	}
