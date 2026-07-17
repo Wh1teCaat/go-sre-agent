@@ -8,7 +8,7 @@ import (
 )
 
 func TestMemoryStoreAppendsAndListsEntries(t *testing.T) {
-	store := NewMemoryStore()
+	store := new(MemoryStore)
 
 	entry := Entry{
 		Step:           1,
@@ -34,7 +34,7 @@ func TestMemoryStoreAppendsAndListsEntries(t *testing.T) {
 }
 
 func TestMemoryStoreListReturnsCopy(t *testing.T) {
-	store := NewMemoryStore()
+	store := new(MemoryStore)
 	store.Append(Entry{Step: 1, ToolName: "log_read"})
 
 	entries := store.List()

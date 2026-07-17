@@ -2,20 +2,11 @@ package trace
 
 import "sync"
 
-type Store interface {
-	Append(entry Entry)
-	List() []Entry
-}
-
 // MemoryStore 是单次 CLI 运行内的 trace 存储。
-// 当前项目不跨进程持久化 trace，报告生成完成后这份内存状态即可丢弃。
+// ponytail: 单次 CLI 只需内存 trace；出现第二种存储实现时再引入接口。
 type MemoryStore struct {
 	mu      sync.Mutex
 	entries []Entry
-}
-
-func NewMemoryStore() *MemoryStore {
-	return &MemoryStore{}
 }
 
 // NewMemoryStoreWithEntries 用已有 trace 初始化内存 store，主要用于 resume。

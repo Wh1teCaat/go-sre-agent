@@ -114,7 +114,7 @@ func runStatusCommand(args []string) {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(2)
 	}
-	content, err := readDiagnosisStatus(statusOptions{RunID: *runID, ConfigPath: *configPath, RunDir: *runDir})
+	content, err := readDiagnosisStatus(runOptions{RunID: *runID, ConfigPath: *configPath, RunDir: *runDir})
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
@@ -131,7 +131,7 @@ func runReportCommand(args []string) {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(2)
 	}
-	content, err := renderDiagnosisReport(reportOptions{RunID: *runID, ConfigPath: *configPath, RunDir: *runDir})
+	content, err := renderDiagnosisReport(runOptions{RunID: *runID, ConfigPath: *configPath, RunDir: *runDir})
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
@@ -163,7 +163,7 @@ func runLLMCommand(args []string) {
 			fmt.Fprintln(os.Stderr, "--message is required")
 			os.Exit(2)
 		}
-		content, err := chatWithLLM(context.Background(), llmChatOptions{Message: *message})
+		content, err := chatWithLLM(context.Background(), *message)
 		if err != nil {
 			fmt.Fprintln(os.Stderr, err)
 			os.Exit(1)

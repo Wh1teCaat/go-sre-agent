@@ -2,6 +2,7 @@ agent:
   max_steps: 12
   llm_timeout: 30s
   tool_timeout: 5s
+  skill_path: ../skills/sre-diagnosis/SKILL.md
 
 policy:
   tool_allowlist:

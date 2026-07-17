@@ -13,7 +13,7 @@ import (
 )
 
 // scenarioActions 返回内置 mock 场景的结构化 action 序列，便于无模型环境下测试链路。
-func scenarioActions(mockScenario string, cfg diagnosisConfig) ([]schema.Action, error) {
+func scenarioActions(mockScenario string, cfg diagnoseOptions) ([]schema.Action, error) {
 	switch mockScenario {
 	case "skeleton":
 		return []schema.Action{

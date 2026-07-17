@@ -31,14 +31,6 @@ type Tool struct {
 	allowedPOST  map[string]struct{}
 }
 
-func New(client *http.Client, maxBodyBytes int) *Tool {
-	return NewWithAllowedHosts(client, maxBodyBytes, nil)
-}
-
-func NewWithAllowedHosts(client *http.Client, maxBodyBytes int, allowedHosts []string) *Tool {
-	return NewWithPolicy(client, maxBodyBytes, allowedHosts, nil)
-}
-
 // NewWithPolicy 额外声明允许 POST 的精确 URL；其他 URL 只能使用 GET/HEAD。
 func NewWithPolicy(client *http.Client, maxBodyBytes int, allowedHosts []string, allowedPOSTURLs []string) *Tool {
 	if client == nil {
@@ -143,6 +135,7 @@ func (t *Tool) Run(ctx context.Context, rawArgs json.RawMessage) (schema.Observa
 			"status":       response.StatusCode,
 			"latency_ms":   latencyMS,
 			"body_snippet": bodySnippet,
+			"request_id":   strings.TrimSpace(response.Header.Get("X-Request-ID")),
 		},
 	}, nil
 }
@@ -207,7 +200,7 @@ func (t *Tool) requestClient() *http.Client {
 func Spec() tools.ToolSpec {
 	return tools.ToolSpec{
 		Name:        Name,
-		Description: "Request an HTTP endpoint and return status, latency, and a body snippet. GET/HEAD are read-only; POST is limited to configured diagnostic URLs.",
+		Description: "Request an HTTP endpoint and return status, latency, response request_id, and a body snippet. Put a user-specified reproduction request_id in the X-Request-ID header; use the returned request_id for later log correlation. GET/HEAD are read-only; POST is limited to configured diagnostic URLs.",
 		Schema: tools.ToolSchema{
 			Properties: map[string]tools.ArgSpec{
 				"url":     {Type: "string", Required: true, Description: "HTTP URL to request."},

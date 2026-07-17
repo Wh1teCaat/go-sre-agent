@@ -14,6 +14,7 @@ agent:
   max_steps: 12
   llm_timeout: 25s
   tool_timeout: 7s
+  skill_path: custom/SKILL.md
 policy:
   tool_allowlist:
     - http_check
@@ -51,6 +52,9 @@ targets:
 	if cfg.Agent.LLMTimeout != 25*time.Second {
 		t.Fatalf("llm timeout = %s, want 25s", cfg.Agent.LLMTimeout)
 	}
+	if cfg.Agent.SkillPath != "custom/SKILL.md" {
+		t.Fatalf("skill path = %q, want custom/SKILL.md", cfg.Agent.SkillPath)
+	}
 	if got := cfg.Policy.ToolAllowlist; len(got) != 2 || got[0] != "http_check" || got[1] != "log_read" {
 		t.Fatalf("tool allowlist = %#v, want http_check/log_read", got)
 	}
@@ -73,6 +77,9 @@ targets:
 
 func TestDefaultAllowsLocalDiagnosticHosts(t *testing.T) {
 	cfg := Default()
+	if cfg.Agent.SkillPath != "skills/sre-diagnosis/SKILL.md" {
+		t.Fatalf("default skill path = %q", cfg.Agent.SkillPath)
+	}
 
 	for _, want := range []string{"localhost", "127.0.0.1", "::1"} {
 		if !contains(cfg.Policy.AllowedHosts, want) {

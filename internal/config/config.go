@@ -19,6 +19,7 @@ type AgentConfig struct {
 	MaxSteps    int
 	LLMTimeout  time.Duration
 	ToolTimeout time.Duration
+	SkillPath   string
 }
 
 type PolicyConfig struct {
@@ -46,6 +47,7 @@ type rawConfig struct {
 		MaxSteps    int    `yaml:"max_steps"`
 		LLMTimeout  string `yaml:"llm_timeout"`
 		ToolTimeout string `yaml:"tool_timeout"`
+		SkillPath   string `yaml:"skill_path"`
 	} `yaml:"agent"`
 	Policy struct {
 		ToolAllowlist     []string `yaml:"tool_allowlist"`
@@ -74,6 +76,7 @@ func Default() Config {
 			MaxSteps:    12,
 			LLMTimeout:  30 * time.Second,
 			ToolTimeout: 5 * time.Second,
+			SkillPath:   "skills/sre-diagnosis/SKILL.md",
 		},
 		Policy: PolicyConfig{
 			ToolAllowlist: []string{
@@ -142,6 +145,9 @@ func Load(path string) (Config, error) {
 			return Config{}, fmt.Errorf("parse agent.tool_timeout: %w", err)
 		}
 		cfg.Agent.ToolTimeout = duration
+	}
+	if raw.Agent.SkillPath != "" {
+		cfg.Agent.SkillPath = raw.Agent.SkillPath
 	}
 	if len(raw.Policy.ToolAllowlist) > 0 {
 		cfg.Policy.ToolAllowlist = raw.Policy.ToolAllowlist

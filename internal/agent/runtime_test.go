@@ -44,7 +44,7 @@ func TestRuntimeRunsToolThenFinalAction(t *testing.T) {
 	if err := registry.Register(runtimeTool{}); err != nil {
 		t.Fatalf("register tool: %v", err)
 	}
-	store := trace.NewMemoryStore()
+	store := new(trace.MemoryStore)
 	provider := llm.NewMockProvider([]schema.Action{
 		{
 			Type:           "tool_call",
@@ -67,9 +67,7 @@ func TestRuntimeRunsToolThenFinalAction(t *testing.T) {
 		MaxSteps:    3,
 		ToolTimeout: time.Second,
 	}, provider, registry, policy.NewValidator(policy.Config{
-		MaxSteps:      3,
 		ToolAllowlist: []string{"http_check"},
-		ToolTimeout:   time.Second,
 	}), store)
 
 	diagnosis, err := runtime.Run(context.Background(), "check service")
@@ -96,7 +94,7 @@ func TestRuntimeRejectsFinalWithoutEvidenceAfterToolExecution(t *testing.T) {
 	if err := registry.Register(runtimeTool{}); err != nil {
 		t.Fatalf("register tool: %v", err)
 	}
-	store := trace.NewMemoryStore()
+	store := new(trace.MemoryStore)
 	provider := llm.NewMockProvider([]schema.Action{
 		{
 			Type:           schema.ActionTypeToolCall,
@@ -123,9 +121,7 @@ func TestRuntimeRejectsFinalWithoutEvidenceAfterToolExecution(t *testing.T) {
 		MaxSteps:    2,
 		ToolTimeout: time.Second,
 	}, provider, registry, policy.NewValidator(policy.Config{
-		MaxSteps:      2,
 		ToolAllowlist: []string{"http_check"},
-		ToolTimeout:   time.Second,
 	}), store)
 
 	_, err := runtime.Run(context.Background(), "check service")
@@ -139,9 +135,30 @@ func TestRuntimeRejectsFinalWithoutEvidenceAfterToolExecution(t *testing.T) {
 	}
 }
 
+func TestRuntimeAllowsFlexibleSummaryFormatting(t *testing.T) {
+	provider := &captureProvider{actions: []schema.Action{{
+		Type: schema.ActionTypeFinal,
+		Final: &schema.Diagnosis{
+			Summary: "历史请求和当前复现现象相同，但根因证据不足。",
+		},
+	}}}
+	runtime := NewRuntime(RuntimeConfig{MaxSteps: 1}, provider, tools.NewRegistry(), policy.NewValidator(policy.Config{}), new(trace.MemoryStore))
+
+	diagnosis, err := runtime.Run(context.Background(), "最终按 [历史]、[结论] 两段输出 Summary")
+	if err != nil {
+		t.Fatalf("run runtime: %v", err)
+	}
+	if diagnosis.Summary != "历史请求和当前复现现象相同，但根因证据不足。" {
+		t.Fatalf("summary = %q", diagnosis.Summary)
+	}
+	if len(provider.requests) != 1 {
+		t.Fatalf("decision requests = %d, want no formatting retry", len(provider.requests))
+	}
+}
+
 func TestRuntimeDerivesLLMObservationsFromTraceStore(t *testing.T) {
 	registry := tools.NewRegistry()
-	store := trace.NewMemoryStore()
+	store := new(trace.MemoryStore)
 	store.Append(trace.Entry{
 		Step:     1,
 		ToolName: "http_check",
@@ -170,16 +187,16 @@ func TestRuntimeDerivesLLMObservationsFromTraceStore(t *testing.T) {
 	runtime := NewRuntime(RuntimeConfig{
 		MaxSteps:    2,
 		ToolTimeout: time.Second,
-	}, provider, registry, policy.NewValidator(policy.Config{
-		MaxSteps:    2,
-		ToolTimeout: time.Second,
-	}), store)
+	}, provider, registry, policy.NewValidator(policy.Config{}), store)
 
 	if _, err := runtime.Run(context.Background(), "check existing trace"); err != nil {
 		t.Fatalf("run runtime: %v", err)
 	}
 	if len(provider.requests) != 1 {
 		t.Fatalf("requests = %d, want 1", len(provider.requests))
+	}
+	if len(provider.planRequests) != 0 {
+		t.Fatalf("planning requests = %d, want none for direct action", len(provider.planRequests))
 	}
 	observations := provider.requests[0].Observations
 	if len(observations) != 1 {
@@ -195,7 +212,7 @@ func TestRuntimeDerivesLLMObservationsFromTraceStore(t *testing.T) {
 
 func TestRuntimeIncludesTargetContextOutsideObservations(t *testing.T) {
 	registry := tools.NewRegistry()
-	store := trace.NewMemoryStore()
+	store := new(trace.MemoryStore)
 	provider := &captureProvider{
 		actions: []schema.Action{
 			{
@@ -213,10 +230,7 @@ func TestRuntimeIncludesTargetContextOutsideObservations(t *testing.T) {
 		TargetContext: map[string]any{
 			"backend_base_url": "http://localhost:8080",
 		},
-	}, provider, registry, policy.NewValidator(policy.Config{
-		MaxSteps:    1,
-		ToolTimeout: time.Second,
-	}), store)
+	}, provider, registry, policy.NewValidator(policy.Config{}), store)
 
 	if _, err := runtime.Run(context.Background(), "check configured target"); err != nil {
 		t.Fatalf("run runtime: %v", err)
@@ -244,7 +258,7 @@ func TestRuntimePassesMemoryHintsOutsideObservations(t *testing.T) {
 			Content:     "曾发现 users 表缺失",
 			SourceRunID: "run_old",
 		}},
-	}, provider, tools.NewRegistry(), policy.NewValidator(policy.Config{}), trace.NewMemoryStore())
+	}, provider, tools.NewRegistry(), policy.NewValidator(policy.Config{}), new(trace.MemoryStore))
 
 	if _, err := runtime.Run(context.Background(), "诊断当前登录故障"); err != nil {
 		t.Fatalf("run runtime: %v", err)
@@ -258,27 +272,27 @@ func TestRuntimePassesMemoryHintsOutsideObservations(t *testing.T) {
 	}
 }
 
-func TestRuntimeMergesPlanAndPassesItToNextStep(t *testing.T) {
+func TestRuntimeSetsPlanWithoutConsumingStep(t *testing.T) {
 	registry := tools.NewRegistry()
 	if err := registry.Register(runtimeTool{}); err != nil {
 		t.Fatalf("register tool: %v", err)
 	}
-	store := trace.NewMemoryStore()
+	store := new(trace.MemoryStore)
 	provider := &captureProvider{
-		actions: []schema.Action{
+		needsPlanAt: map[int]bool{0: true},
+		plans: []*schema.Plan{
 			{
-				Type:           schema.ActionTypePlan,
-				ThoughtSummary: "先规划覆盖面",
-				Plan: &schema.Plan{
-					Reason: "复杂目标需要先列检查项",
-					Items: []schema.PlanItem{
-						{ID: "backend", Goal: "检查后端服务是否存活", Status: "pending"},
-					},
+				Reason: "复杂目标需要先列检查项",
+				Items: []schema.PlanItem{
+					{ID: "backend", Goal: "检查后端服务是否存活", Status: "pending"},
 				},
 			},
+		},
+		actions: []schema.Action{
 			{
 				Type:           schema.ActionTypeToolCall,
 				ThoughtSummary: "检查后端",
+				PlanItemID:     "backend",
 				Tool:           "http_check",
 				Args:           json.RawMessage(`{"url":"http://localhost:8080/health"}`),
 			},
@@ -288,14 +302,14 @@ func TestRuntimeMergesPlanAndPassesItToNextStep(t *testing.T) {
 				Final: &schema.Diagnosis{
 					Summary: "后端服务存活",
 					Evidence: []schema.Evidence{
-						{Step: 2, Tool: "http_check", Summary: "backend returned 200"},
+						{Step: 1, Tool: "http_check", Summary: "backend returned 200"},
 					},
 					Coverage: []schema.CoverageItem{
 						{
 							PlanItemID: "backend",
 							Status:     "done",
 							Evidence: []schema.Evidence{
-								{Step: 2, Tool: "http_check", Summary: "backend returned 200"},
+								{Step: 1, Tool: "http_check", Summary: "backend returned 200"},
 							},
 						},
 					},
@@ -307,9 +321,7 @@ func TestRuntimeMergesPlanAndPassesItToNextStep(t *testing.T) {
 		MaxSteps:    3,
 		ToolTimeout: time.Second,
 	}, provider, registry, policy.NewValidator(policy.Config{
-		MaxSteps:      3,
 		ToolAllowlist: []string{"http_check"},
-		ToolTimeout:   time.Second,
 		ToolSchemas: map[string]tools.ToolSchema{
 			"http_check": runtimeTool{}.Schema(),
 		},
@@ -318,45 +330,67 @@ func TestRuntimeMergesPlanAndPassesItToNextStep(t *testing.T) {
 	if _, err := runtime.Run(context.Background(), "检查后端"); err != nil {
 		t.Fatalf("run runtime: %v", err)
 	}
-	if len(provider.requests) != 3 {
-		t.Fatalf("requests = %d, want 3", len(provider.requests))
+	if len(provider.planRequests) != 1 || len(provider.requests) != 3 {
+		t.Fatalf("plan/decision requests = %d/%d, want 1/3", len(provider.planRequests), len(provider.requests))
+	}
+	if provider.planRequests[0].Plan != nil {
+		t.Fatalf("first planning request plan = %#v, want nil", provider.planRequests[0].Plan)
 	}
 	if provider.requests[0].Plan != nil {
-		t.Fatalf("first request plan = %#v, want nil", provider.requests[0].Plan)
+		t.Fatalf("planning decision request plan = %#v, want nil", provider.requests[0].Plan)
 	}
 	if provider.requests[1].Plan == nil || provider.requests[1].Plan.Items[0].ID != "backend" {
-		t.Fatalf("second request plan = %#v, want backend plan", provider.requests[1].Plan)
+		t.Fatalf("first action request plan = %#v, want backend plan", provider.requests[1].Plan)
 	}
-	if len(store.List()) != 3 || store.List()[0].ActionType != schema.ActionTypePlan || store.List()[1].Step != 2 || store.List()[2].ActionType != schema.ActionTypeFinal {
-		t.Fatalf("trace = %#v, want plan/tool/final actions", store.List())
+	if !provider.requests[0].PlanningAllowed || provider.requests[1].PlanningAllowed || !provider.requests[2].PlanningAllowed {
+		t.Fatalf("planning_allowed = %v/%v/%v, want true/false/true", provider.requests[0].PlanningAllowed, provider.requests[1].PlanningAllowed, provider.requests[2].PlanningAllowed)
 	}
-	if runtime.Plan().Items[0].Goal != "检查后端服务是否存活" {
+	if provider.requests[0].Step != 1 || provider.requests[1].Step != 1 || provider.requests[2].Step != 2 {
+		t.Fatalf("decision request steps = %d/%d/%d, want 1/1/2", provider.requests[0].Step, provider.requests[1].Step, provider.requests[2].Step)
+	}
+	if len(store.List()) != 2 || store.List()[0].Step != 1 || store.List()[0].PlanItemID != "backend" || store.List()[1].ActionType != schema.ActionTypeFinal {
+		t.Fatalf("trace = %#v, want tool/final actions", store.List())
+	}
+	if runtime.Plan().Items[0].Goal != "检查后端服务是否存活" || runtime.Plan().Items[0].Status != "done" {
 		t.Fatalf("runtime plan = %#v", runtime.Plan())
 	}
 }
 
-func TestMergePlanKeepsExistingItemsDuringReplan(t *testing.T) {
-	current := schema.Plan{
-		Reason: "初始计划",
-		Items: []schema.PlanItem{
-			{ID: "backend", Goal: "检查后端", Status: "pending"},
-			{ID: "logs", Goal: "检查日志", Status: "pending"},
-		},
+func TestRuntimeRejectsDuplicateSuccessfulToolCall(t *testing.T) {
+	registry := tools.NewRegistry()
+	if err := registry.Register(runtimeTool{}); err != nil {
+		t.Fatalf("register tool: %v", err)
 	}
-	next := schema.Plan{
-		Reason: "后端正常，补查 Redis",
-		Items: []schema.PlanItem{
-			{ID: "backend", Goal: "检查后端", Status: "done"},
-			{ID: "redis", Goal: "检查 Redis", Status: "pending"},
-		},
+	action := schema.Action{
+		Type: schema.ActionTypeToolCall,
+		Tool: "http_check",
+		Args: json.RawMessage(`{"url":"http://localhost:8080/health"}`),
 	}
+	provider := &captureProvider{actions: []schema.Action{
+		action,
+		action,
+		{
+			Type: schema.ActionTypeFinal,
+			Final: &schema.Diagnosis{
+				Summary:  "已有检查结果，无需重复调用。",
+				Evidence: []schema.Evidence{{Step: 1, Tool: "http_check"}},
+			},
+		},
+	}}
+	store := new(trace.MemoryStore)
+	runtime := NewRuntime(RuntimeConfig{MaxSteps: 2}, provider, registry, policy.NewValidator(policy.Config{
+		ToolAllowlist: []string{"http_check"},
+	}), store)
 
-	merged := mergePlan(current, next)
-	if merged.Reason != next.Reason || len(merged.Items) != 3 {
-		t.Fatalf("merged plan = %#v", merged)
+	if _, err := runtime.Run(context.Background(), "检查一次后端健康状态"); err != nil {
+		t.Fatalf("run runtime: %v", err)
 	}
-	if merged.Items[0].Status != "done" || merged.Items[1].ID != "logs" || merged.Items[2].ID != "redis" {
-		t.Fatalf("merged items = %#v", merged.Items)
+	if len(provider.requests) != 3 || !strings.Contains(provider.requests[2].Correction, "duplicate successful tool call") {
+		t.Fatalf("requests/correction = %d/%q", len(provider.requests), provider.requests[2].Correction)
+	}
+	entries := store.List()
+	if len(entries) != 2 || entries[0].ToolName != "http_check" || entries[1].ActionType != schema.ActionTypeFinal {
+		t.Fatalf("trace = %#v, want one tool call and final", entries)
 	}
 }
 
@@ -367,7 +401,7 @@ func TestRuntimeAppliesToolArgOverridesAndRedactsTraceArgs(t *testing.T) {
 	if err := registry.Register(tool); err != nil {
 		t.Fatalf("register tool: %v", err)
 	}
-	store := trace.NewMemoryStore()
+	store := new(trace.MemoryStore)
 	provider := llm.NewMockProvider([]schema.Action{
 		{
 			Type:           schema.ActionTypeToolCall,
@@ -395,7 +429,6 @@ func TestRuntimeAppliesToolArgOverridesAndRedactsTraceArgs(t *testing.T) {
 			},
 		},
 	}, provider, registry, policy.NewValidator(policy.Config{
-		MaxSteps: 2,
 		ToolSchemas: map[string]tools.ToolSchema{
 			tool.Name(): tool.Schema(),
 		},
@@ -418,7 +451,7 @@ func TestRuntimeAppliesToolArgOverridesAndRedactsTraceArgs(t *testing.T) {
 
 func TestRuntimeContinuesStepNumberAfterExistingTrace(t *testing.T) {
 	registry := tools.NewRegistry()
-	store := trace.NewMemoryStore()
+	store := new(trace.MemoryStore)
 	store.Append(trace.Entry{
 		Step:     1,
 		ToolName: "http_check",
@@ -444,10 +477,7 @@ func TestRuntimeContinuesStepNumberAfterExistingTrace(t *testing.T) {
 	runtime := NewRuntime(RuntimeConfig{
 		MaxSteps:    3,
 		ToolTimeout: time.Second,
-	}, provider, registry, policy.NewValidator(policy.Config{
-		MaxSteps:    3,
-		ToolTimeout: time.Second,
-	}), store)
+	}, provider, registry, policy.NewValidator(policy.Config{}), store)
 
 	if _, err := runtime.Run(context.Background(), "resume existing trace"); err != nil {
 		t.Fatalf("run runtime: %v", err)
@@ -460,10 +490,10 @@ func TestRuntimeContinuesStepNumberAfterExistingTrace(t *testing.T) {
 	}
 }
 
-func TestNextStepUsesMaxTraceStep(t *testing.T) {
+func TestNextStepUsesLastTraceStep(t *testing.T) {
 	entries := []trace.Entry{
-		{Step: 9},
 		{Step: 1},
+		{Step: 9},
 	}
 
 	if got := nextStep(entries); got != 10 {
@@ -476,7 +506,7 @@ func TestRuntimeStopsAtMaxSteps(t *testing.T) {
 	if err := registry.Register(runtimeTool{}); err != nil {
 		t.Fatalf("register tool: %v", err)
 	}
-	store := trace.NewMemoryStore()
+	store := new(trace.MemoryStore)
 	provider := llm.NewMockProvider([]schema.Action{
 		{
 			Type:           "tool_call",
@@ -495,9 +525,7 @@ func TestRuntimeStopsAtMaxSteps(t *testing.T) {
 		MaxSteps:    1,
 		ToolTimeout: time.Second,
 	}, provider, registry, policy.NewValidator(policy.Config{
-		MaxSteps:      1,
 		ToolAllowlist: []string{"http_check"},
-		ToolTimeout:   time.Second,
 	}), store)
 
 	_, err := runtime.Run(context.Background(), "keep checking")
@@ -511,20 +539,17 @@ func TestRuntimeStopsAtMaxSteps(t *testing.T) {
 
 func TestRuntimeWrapsProviderErrorWithStepContext(t *testing.T) {
 	registry := tools.NewRegistry()
-	store := trace.NewMemoryStore()
+	store := new(trace.MemoryStore)
 	runtime := NewRuntime(RuntimeConfig{
 		MaxSteps:    1,
 		ToolTimeout: time.Second,
-	}, failingProvider{err: errors.New("model returned invalid content")}, registry, policy.NewValidator(policy.Config{
-		MaxSteps:    1,
-		ToolTimeout: time.Second,
-	}), store)
+	}, failingProvider{err: errors.New("model returned invalid content")}, registry, policy.NewValidator(policy.Config{}), store)
 
 	_, err := runtime.Run(context.Background(), "check service")
 	if err == nil {
 		t.Fatal("run succeeded, want provider error")
 	}
-	for _, want := range []string{"plan next action at step 1", "model returned invalid content"} {
+	for _, want := range []string{"request next decision at step 1", "model returned invalid content"} {
 		if !strings.Contains(err.Error(), want) {
 			t.Fatalf("error = %q, want %q", err.Error(), want)
 		}
@@ -536,7 +561,7 @@ func TestRuntimeAppliesLLMTimeoutAndRetriesOnce(t *testing.T) {
 	runtime := NewRuntime(RuntimeConfig{
 		MaxSteps:   1,
 		LLMTimeout: 10 * time.Millisecond,
-	}, provider, tools.NewRegistry(), policy.NewValidator(policy.Config{}), trace.NewMemoryStore())
+	}, provider, tools.NewRegistry(), policy.NewValidator(policy.Config{}), new(trace.MemoryStore))
 
 	_, err := runtime.Run(context.Background(), "检查模型超时")
 	if err == nil || !strings.Contains(err.Error(), "context deadline exceeded") {
@@ -549,7 +574,7 @@ func TestRuntimeAppliesLLMTimeoutAndRetriesOnce(t *testing.T) {
 
 func TestRuntimeWrapsPolicyErrorWithStepContext(t *testing.T) {
 	registry := tools.NewRegistry()
-	store := trace.NewMemoryStore()
+	store := new(trace.MemoryStore)
 	provider := llm.NewMockProvider([]schema.Action{
 		{
 			Type: "unknown",
@@ -561,10 +586,7 @@ func TestRuntimeWrapsPolicyErrorWithStepContext(t *testing.T) {
 	runtime := NewRuntime(RuntimeConfig{
 		MaxSteps:    1,
 		ToolTimeout: time.Second,
-	}, provider, registry, policy.NewValidator(policy.Config{
-		MaxSteps:    1,
-		ToolTimeout: time.Second,
-	}), store)
+	}, provider, registry, policy.NewValidator(policy.Config{}), store)
 
 	_, err := runtime.Run(context.Background(), "check service")
 	if err == nil {
@@ -582,7 +604,7 @@ func TestRuntimeRetriesInvalidActionWithCorrection(t *testing.T) {
 		{Type: "unknown"},
 		{Type: schema.ActionTypeFinal, Final: &schema.Diagnosis{Summary: "纠错成功"}},
 	}}
-	store := trace.NewMemoryStore()
+	store := new(trace.MemoryStore)
 	runtime := NewRuntime(RuntimeConfig{MaxSteps: 1}, provider, tools.NewRegistry(), policy.NewValidator(policy.Config{}), store)
 
 	diagnosis, err := runtime.Run(context.Background(), "验证 action 纠错")
@@ -606,12 +628,21 @@ func TestRuntimeContinuesAfterToolErrorAndPassesFailureObservation(t *testing.T)
 	if err := registry.Register(failingRuntimeTool{}); err != nil {
 		t.Fatalf("register tool: %v", err)
 	}
-	store := trace.NewMemoryStore()
+	store := new(trace.MemoryStore)
 	provider := &captureProvider{
+		needsPlanAt: map[int]bool{0: true, 2: true},
+		plans: []*schema.Plan{
+			{
+				Reason: "先检查后端",
+				Items:  []schema.PlanItem{{ID: "backend", Goal: "检查后端服务", Status: "pending"}},
+			},
+			nil,
+		},
 		actions: []schema.Action{
 			{
 				Type:           schema.ActionTypeToolCall,
 				ThoughtSummary: "check backend health first",
+				PlanItemID:     "backend",
 				Tool:           "http_check",
 				Args:           json.RawMessage(`{"url":"http://localhost:8080/health"}`),
 			},
@@ -623,6 +654,15 @@ func TestRuntimeContinuesAfterToolErrorAndPassesFailureObservation(t *testing.T)
 					Evidence: []schema.Evidence{
 						{Step: 1, Tool: "http_check", Summary: "connection refused"},
 					},
+					Coverage: []schema.CoverageItem{
+						{
+							PlanItemID: "backend",
+							Status:     "blocked",
+							Evidence: []schema.Evidence{
+								{Step: 1, Tool: "http_check", Summary: "connection refused"},
+							},
+						},
+					},
 				},
 			},
 		},
@@ -631,9 +671,7 @@ func TestRuntimeContinuesAfterToolErrorAndPassesFailureObservation(t *testing.T)
 		MaxSteps:    2,
 		ToolTimeout: time.Second,
 	}, provider, registry, policy.NewValidator(policy.Config{
-		MaxSteps:      2,
 		ToolAllowlist: []string{"http_check"},
-		ToolTimeout:   time.Second,
 	}), store)
 
 	diagnosis, err := runtime.Run(context.Background(), "check service")
@@ -644,15 +682,21 @@ func TestRuntimeContinuesAfterToolErrorAndPassesFailureObservation(t *testing.T)
 		t.Fatalf("summary = %q", diagnosis.Summary)
 	}
 
-	if len(provider.requests) != 2 {
-		t.Fatalf("provider requests = %d, want 2", len(provider.requests))
+	if len(provider.requests) != 4 {
+		t.Fatalf("provider requests = %d, want 4", len(provider.requests))
 	}
-	observations := provider.requests[1].Observations
+	if len(provider.planRequests) != 2 || len(provider.planRequests[1].Observations) != 1 {
+		t.Fatalf("planning requests = %#v, want requested plan and replan after tool error", provider.planRequests)
+	}
+	observations := provider.requests[2].Observations
 	if len(observations) != 1 {
-		t.Fatalf("second request observations = %d, want 1", len(observations))
+		t.Fatalf("replan decision observations = %d, want 1", len(observations))
 	}
 	if observations[0].Tool != "http_check" {
 		t.Fatalf("observation tool = %q, want http_check", observations[0].Tool)
+	}
+	if observations[0].PlanItemID != "backend" {
+		t.Fatalf("observation plan item = %q, want backend", observations[0].PlanItemID)
 	}
 	if !strings.Contains(observations[0].Error, "connection refused") {
 		t.Fatalf("observation error = %q, want tool error", observations[0].Error)
@@ -668,22 +712,44 @@ func TestRuntimeContinuesAfterToolErrorAndPassesFailureObservation(t *testing.T)
 	if !strings.Contains(entries[0].Result.Error, "connection refused") {
 		t.Fatalf("trace result error = %q, want tool error", entries[0].Result.Error)
 	}
+	if entries[0].PlanItemID != "backend" {
+		t.Fatalf("trace plan item = %q, want backend", entries[0].PlanItemID)
+	}
 }
 
 type captureProvider struct {
-	actions  []schema.Action
-	requests []llm.Request
-	index    int
+	plans        []*schema.Plan
+	actions      []schema.Action
+	needsPlanAt  map[int]bool
+	planRequests []llm.Request
+	requests     []llm.Request
+	planIndex    int
+	index        int
 }
 
-func (p *captureProvider) NextAction(ctx context.Context, request llm.Request) (schema.Action, error) {
+func (p *captureProvider) Plan(ctx context.Context, request llm.Request) (*schema.Plan, error) {
+	p.planRequests = append(p.planRequests, request)
+	if p.planIndex >= len(p.plans) {
+		return nil, nil
+	}
+	plan := p.plans[p.planIndex]
+	p.planIndex++
+	return plan, nil
+}
+
+func (p *captureProvider) Next(ctx context.Context, request llm.Request) (llm.Decision, error) {
+	call := len(p.requests)
 	p.requests = append(p.requests, request)
+	if p.needsPlanAt[call] {
+		return llm.Decision{NeedsPlan: true}, nil
+	}
 	if p.index >= len(p.actions) {
-		return schema.Action{}, nil
+		action := schema.Action{}
+		return llm.Decision{Action: &action}, nil
 	}
 	action := p.actions[p.index]
 	p.index++
-	return action, nil
+	return llm.Decision{Action: &action}, nil
 }
 
 type failingProvider struct {
@@ -694,14 +760,22 @@ type timeoutProvider struct {
 	calls int
 }
 
-func (p *timeoutProvider) NextAction(ctx context.Context, _ llm.Request) (schema.Action, error) {
-	p.calls++
-	<-ctx.Done()
-	return schema.Action{}, ctx.Err()
+func (p *timeoutProvider) Plan(context.Context, llm.Request) (*schema.Plan, error) {
+	return nil, nil
 }
 
-func (p failingProvider) NextAction(context.Context, llm.Request) (schema.Action, error) {
-	return schema.Action{}, p.err
+func (p *timeoutProvider) Next(ctx context.Context, _ llm.Request) (llm.Decision, error) {
+	p.calls++
+	<-ctx.Done()
+	return llm.Decision{}, ctx.Err()
+}
+
+func (p failingProvider) Plan(context.Context, llm.Request) (*schema.Plan, error) {
+	return nil, nil
+}
+
+func (p failingProvider) Next(context.Context, llm.Request) (llm.Decision, error) {
+	return llm.Decision{}, p.err
 }
 
 type failingRuntimeTool struct{}

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"reflect"
 	"strings"
 	"time"
 
@@ -21,7 +22,6 @@ type RuntimeConfig struct {
 	Model            string
 	TargetContext    map[string]any
 	ToolArgOverrides map[string]map[string]any
-	Plan             schema.Plan
 	Memories         []schema.Memory
 }
 
@@ -30,11 +30,11 @@ type Runtime struct {
 	provider  llm.Provider
 	registry  *tools.Registry
 	validator *policy.Validator
-	trace     trace.Store
-	plan      schema.Plan
+	trace     *trace.MemoryStore
+	plan      *schema.Plan
 }
 
-func NewRuntime(config RuntimeConfig, provider llm.Provider, registry *tools.Registry, validator *policy.Validator, traceStore trace.Store) *Runtime {
+func NewRuntime(config RuntimeConfig, provider llm.Provider, registry *tools.Registry, validator *policy.Validator, traceStore *trace.MemoryStore) *Runtime {
 	if config.MaxSteps <= 0 {
 		config.MaxSteps = 12
 	}
@@ -47,95 +47,113 @@ func NewRuntime(config RuntimeConfig, provider llm.Provider, registry *tools.Reg
 		registry:  registry,
 		validator: validator,
 		trace:     traceStore,
-		plan:      config.Plan,
 	}
 }
 
-// Run 执行一次完整诊断循环：让 LLM 选择 action，校验 action，
+// Run 执行一次完整诊断循环：让 LLM 选择是否更新计划以及下一步 action，
 // 执行只读工具并记录 trace，直到模型返回 final 或达到最大步数。
 func (r *Runtime) Run(ctx context.Context, goal string) (*schema.Diagnosis, error) {
-	startStep := nextStep(r.trace.List())
+	existingEntries := r.trace.List()
+	startStep := nextStep(existingEntries)
 	if startStep > r.config.MaxSteps {
 		return nil, fmt.Errorf("max steps %d already reached by existing trace step %d", r.config.MaxSteps, startStep-1)
 	}
 	for step := startStep; step <= r.config.MaxSteps; step++ {
 		entries := r.trace.List()
-		// 每轮都把当前工具列表和已有 observation 重新发给 provider，
-		// 让真实 LLM 或 mock provider 基于同一个 Request 契约决定下一步。
-		action, decision, err := r.nextAction(ctx, llm.Request{
+		observations := observationsFromTrace(entries)
+		var actionMeta llmMeta
+
+		request := llm.Request{
 			Goal:          goal,
+			Mode:          "decision",
 			Step:          step,
 			TargetContext: r.config.TargetContext,
-			Plan:          currentPlan(r.plan),
+			Plan:          clonePlan(r.plan),
 			Memories:      r.config.Memories,
 			Tools:         r.registry.List(),
-			Observations:  observationsFromTrace(entries),
-		}, entries)
+			Observations:  observations,
+		}
+		decision, meta, err := r.requestValidDecision(ctx, request, entries, true)
 		if err != nil {
 			return nil, err
 		}
-		if action.Type == schema.ActionTypePlan {
-			r.plan = mergePlan(r.plan, *action.Plan)
-			r.trace.Append(decisionTraceEntry(step, action, decision, r.config.Model))
-			continue
-		}
-		if action.IsFinal() {
-			r.trace.Append(decisionTraceEntry(step, action, decision, r.config.Model))
-			return action.Final, nil
+		addLLMMeta(&actionMeta, meta)
+
+		if decision.NeedsPlan {
+			plan, meta, err := r.requestValidPlan(ctx, request)
+			if err != nil {
+				return nil, err
+			}
+			if plan != nil {
+				r.plan = clonePlan(plan)
+			}
+			addLLMMeta(&actionMeta, meta)
+
+			request.Plan = clonePlan(r.plan)
+			decision, meta, err = r.requestValidDecision(ctx, request, entries, false)
+			if err != nil {
+				return nil, err
+			}
+			addLLMMeta(&actionMeta, meta)
 		}
 
-		// 工具失败也会写入 trace/observation，下一轮交给 LLM 决定如何继续。
-		if err := r.executeTool(ctx, step, action, decision); err != nil {
-			continue
+		action := *decision.Action
+		switch action.Type {
+		case schema.ActionTypeFinal:
+			r.applyCoverage(action.Final.Coverage)
+			r.trace.Append(actionTraceEntry(step, action, actionMeta, r.config.Model))
+			return action.Final, nil
+		case schema.ActionTypeToolCall:
+			// 工具失败也会写入 trace/observation，下一轮交给 LLM 决定如何继续。
+			if err := r.executeTool(ctx, step, action, actionMeta); err != nil {
+				continue
+			}
 		}
 	}
 
 	return nil, fmt.Errorf("max steps reached: %d", r.config.MaxSteps)
 }
 
-type decisionMeta struct {
+type llmMeta struct {
 	StartedAt time.Time
 	Duration  time.Duration
 	Attempts  int
 }
 
-// nextAction 对同一个 step 最多纠错一次。模型调用错误、action 参数错误和
-// final 证据错误都会通过 correction 返回模型，重试不额外消耗 agent step。
-func (r *Runtime) nextAction(ctx context.Context, request llm.Request, entries []trace.Entry) (schema.Action, decisionMeta, error) {
-	meta := decisionMeta{StartedAt: time.Now()}
-	var lastAction schema.Action
+func addLLMMeta(total *llmMeta, next llmMeta) {
+	if total.StartedAt.IsZero() {
+		total.StartedAt = next.StartedAt
+	}
+	total.Duration += next.Duration
+	total.Attempts += next.Attempts
+}
+
+func (r *Runtime) requestValidPlan(ctx context.Context, request llm.Request) (*schema.Plan, llmMeta, error) {
+	request.Mode = "plan"
+	meta := llmMeta{StartedAt: time.Now()}
+	var lastPlan *schema.Plan
 	var lastErr error
 	for attempt := 1; attempt <= 2; attempt++ {
 		meta.Attempts = attempt
 		callCtx, cancel := context.WithTimeout(ctx, r.config.LLMTimeout)
 		startedAt := time.Now()
-		action, err := r.provider.NextAction(callCtx, request)
+		plan, err := r.provider.Plan(callCtx, request)
 		meta.Duration += time.Since(startedAt)
 		cancel()
-		lastAction = action
+		lastPlan = plan
 		providerFailed := err != nil
 		if err != nil {
-			lastErr = fmt.Errorf("plan next action at step %d: %w", request.Step, err)
-		} else if action.Type == schema.ActionTypeToolCall {
-			action, err = applyToolArgOverrides(action, r.config.ToolArgOverrides)
-			lastAction = action
-			if err != nil {
-				lastErr = fmt.Errorf("prepare tool args at step %d: %w", request.Step, err)
+			lastErr = fmt.Errorf("request plan at step %d: %w", request.Step, err)
+		} else if plan == nil && request.Plan == nil {
+			err = fmt.Errorf("planning request requires a non-null plan")
+			lastErr = fmt.Errorf("validate plan at step %d: %w", request.Step, err)
+		} else if plan != nil {
+			if err = r.validator.ValidatePlan(*plan); err != nil {
+				lastErr = fmt.Errorf("validate plan at step %d: %w", request.Step, err)
 			}
 		}
 		if err == nil {
-			if err = r.validator.ValidateAction(action); err != nil {
-				lastErr = fmt.Errorf("validate action at step %d: %w", request.Step, err)
-			} else if action.IsFinal() {
-				if err = r.validator.ValidateFinalCoverage(action.Final, r.plan); err != nil {
-					lastErr = fmt.Errorf("validate final coverage at step %d: %w", request.Step, err)
-				} else if err = r.validator.ValidateFinalEvidence(action.Final, entries); err != nil {
-					lastErr = fmt.Errorf("validate final evidence at step %d: %w", request.Step, err)
-				}
-			}
-		}
-		if err == nil {
-			return action, meta, nil
+			return plan, meta, nil
 		}
 		if attempt == 2 {
 			break
@@ -143,11 +161,83 @@ func (r *Runtime) nextAction(ctx context.Context, request llm.Request, entries [
 		request.Correction = correctionMessage(lastErr)
 		if providerFailed {
 			if err := waitForRetry(ctx, 100*time.Millisecond); err != nil {
-				return lastAction, meta, err
+				return lastPlan, meta, err
 			}
 		}
 	}
-	return lastAction, meta, lastErr
+	return lastPlan, meta, lastErr
+}
+
+// requestValidDecision 对同一个 step 最多纠错一次，重试不额外消耗 agent step。
+func (r *Runtime) requestValidDecision(ctx context.Context, request llm.Request, entries []trace.Entry, allowPlanning bool) (llm.Decision, llmMeta, error) {
+	request.PlanningAllowed = allowPlanning
+	meta := llmMeta{StartedAt: time.Now()}
+	var lastDecision llm.Decision
+	var lastErr error
+	for attempt := 1; attempt <= 2; attempt++ {
+		meta.Attempts = attempt
+		callCtx, cancel := context.WithTimeout(ctx, r.config.LLMTimeout)
+		startedAt := time.Now()
+		decision, err := r.provider.Next(callCtx, request)
+		meta.Duration += time.Since(startedAt)
+		cancel()
+		lastDecision = decision
+		providerFailed := err != nil
+		if err != nil {
+			lastErr = fmt.Errorf("request next decision at step %d: %w", request.Step, err)
+		} else if decision.NeedsPlan {
+			switch {
+			case decision.Action != nil:
+				err = fmt.Errorf("planning decision must not include an action")
+			case !allowPlanning:
+				err = fmt.Errorf("planning is already handled for this step")
+			}
+			if err != nil {
+				lastErr = fmt.Errorf("validate decision at step %d: %w", request.Step, err)
+			}
+		} else if decision.Action == nil {
+			err = fmt.Errorf("decision requires an action")
+			lastErr = fmt.Errorf("validate decision at step %d: %w", request.Step, err)
+		} else {
+			action := *decision.Action
+			if action.Type == schema.ActionTypeToolCall {
+				action, err = applyToolArgOverrides(action, r.config.ToolArgOverrides)
+				decision.Action = &action
+				lastDecision = decision
+				if err != nil {
+					lastErr = fmt.Errorf("prepare tool args at step %d: %w", request.Step, err)
+				}
+			}
+			if err == nil {
+				if err = r.validator.ValidateAction(action); err != nil {
+					lastErr = fmt.Errorf("validate action at step %d: %w", request.Step, err)
+				} else if err = r.validator.ValidatePlanAdherence(action, r.plan); err != nil {
+					lastErr = fmt.Errorf("validate plan adherence at step %d: %w", request.Step, err)
+				} else if err = validateNoDuplicateToolCall(action, entries); err != nil {
+					lastErr = fmt.Errorf("validate tool call at step %d: %w", request.Step, err)
+				} else if action.Type == schema.ActionTypeFinal {
+					if err = r.validator.ValidateFinalCoverage(action.Final, r.Plan()); err != nil {
+						lastErr = fmt.Errorf("validate final coverage at step %d: %w", request.Step, err)
+					} else if err = r.validator.ValidateFinalEvidence(action.Final, entries); err != nil {
+						lastErr = fmt.Errorf("validate final evidence at step %d: %w", request.Step, err)
+					}
+				}
+			}
+		}
+		if err == nil {
+			return decision, meta, nil
+		}
+		if attempt == 2 {
+			break
+		}
+		request.Correction = correctionMessage(lastErr)
+		if providerFailed {
+			if err := waitForRetry(ctx, 100*time.Millisecond); err != nil {
+				return lastDecision, meta, err
+			}
+		}
+	}
+	return lastDecision, meta, lastErr
 }
 
 func correctionMessage(err error) string {
@@ -156,7 +246,7 @@ func correctionMessage(err error) string {
 	if len(runes) > 500 {
 		message = string(runes[:500]) + "..."
 	}
-	return "上一次输出未通过校验。请根据错误修正，并且只返回一个合法 action JSON：" + message
+	return message
 }
 
 func waitForRetry(ctx context.Context, delay time.Duration) error {
@@ -170,7 +260,7 @@ func waitForRetry(ctx context.Context, delay time.Duration) error {
 	}
 }
 
-func decisionTraceEntry(step int, action schema.Action, meta decisionMeta, model string) trace.Entry {
+func actionTraceEntry(step int, action schema.Action, meta llmMeta, model string) trace.Entry {
 	return trace.Entry{
 		Step:           step,
 		ActionType:     action.Type,
@@ -186,47 +276,51 @@ func decisionTraceEntry(step int, action schema.Action, meta decisionMeta, model
 
 // Plan 返回 runtime 当前检查清单，用于持久化和报告展示。
 func (r *Runtime) Plan() schema.Plan {
-	return r.plan
+	if r.plan == nil {
+		return schema.Plan{}
+	}
+	return *clonePlan(r.plan)
 }
 
-func currentPlan(plan schema.Plan) *schema.Plan {
+// RestorePlan 恢复中断运行的计划；新运行的计划仍由 Provider 生成。
+func (r *Runtime) RestorePlan(plan schema.Plan) {
 	if plan.Reason == "" && len(plan.Items) == 0 {
+		return
+	}
+	r.plan = clonePlan(&plan)
+}
+
+func clonePlan(plan *schema.Plan) *schema.Plan {
+	if plan == nil {
 		return nil
 	}
-	copied := plan
+	copied := *plan
 	copied.Items = append([]schema.PlanItem(nil), plan.Items...)
 	return &copied
 }
 
-func mergePlan(current schema.Plan, next schema.Plan) schema.Plan {
-	if next.Reason != "" {
-		current.Reason = next.Reason
+func (r *Runtime) applyCoverage(coverage []schema.CoverageItem) {
+	if r.plan == nil {
+		return
 	}
-	index := make(map[string]int, len(current.Items))
-	for i, item := range current.Items {
-		index[item.ID] = i
+	statuses := make(map[string]string, len(coverage))
+	for _, item := range coverage {
+		statuses[strings.TrimSpace(item.PlanItemID)] = item.Status
 	}
-	for _, item := range next.Items {
-		if i, ok := index[item.ID]; ok {
-			current.Items[i] = item
-			continue
+	for i := range r.plan.Items {
+		if status := statuses[strings.TrimSpace(r.plan.Items[i].ID)]; status != "" {
+			r.plan.Items[i].Status = status
 		}
-		index[item.ID] = len(current.Items)
-		current.Items = append(current.Items, item)
 	}
-	return current
 }
 
-// nextStep 基于已有 trace 的最大 step 计算下一次规划的 step。
+// nextStep 基于已有 trace 的最后一个 step 计算下一次规划的 step。
 // resume 会用历史 trace 初始化 runtime 的 trace store，因此不能从 1 重新开始。
 func nextStep(entries []trace.Entry) int {
-	next := 1
-	for _, entry := range entries {
-		if entry.Step >= next {
-			next = entry.Step + 1
-		}
+	if len(entries) == 0 {
+		return 1
 	}
-	return next
+	return entries[len(entries)-1].Step + 1
 }
 
 // observationsFromTrace 从内部审计 trace 中提取 LLM 可见的 observation。
@@ -240,6 +334,7 @@ func observationsFromTrace(entries []trace.Entry) []schema.Observation {
 		observation := entry.Result
 		// step 来自 trace，而不是工具返回值；模型据此引用真实 evidence。
 		observation.Step = entry.Step
+		observation.PlanItemID = entry.PlanItemID
 		observations = append(observations, observation)
 	}
 	return observations
@@ -271,9 +366,28 @@ func applyToolArgOverrides(action schema.Action, overrides map[string]map[string
 	return action, nil
 }
 
+func validateNoDuplicateToolCall(action schema.Action, entries []trace.Entry) error {
+	if action.Type != schema.ActionTypeToolCall {
+		return nil
+	}
+	args := map[string]any{}
+	if err := json.Unmarshal(action.Args, &args); err != nil {
+		return err
+	}
+	candidate := redactTraceArgs(args)
+	for _, entry := range entries {
+		if entry.ToolName == action.Tool && entry.Error == "" && reflect.DeepEqual(entry.Args, candidate) {
+			// ponytail: this one-shot runtime blocks exact successful repeats; add an explicit
+			// repeat intent/fingerprint if deliberate repeated measurements become a feature.
+			return fmt.Errorf("duplicate successful tool call matches step %d", entry.Step)
+		}
+	}
+	return nil
+}
+
 // executeTool 在受控超时内运行工具，并把成功或失败都写入 trace。
 // 工具失败不会中断整个诊断链路，下一步由 LLM 基于失败 observation 决策。
-func (r *Runtime) executeTool(ctx context.Context, step int, action schema.Action, decision decisionMeta) error {
+func (r *Runtime) executeTool(ctx context.Context, step int, action schema.Action, meta llmMeta) error {
 	tool, ok := r.registry.Get(action.Tool)
 	if !ok {
 		return fmt.Errorf("tool %q is not registered", action.Tool)
@@ -285,11 +399,11 @@ func (r *Runtime) executeTool(ctx context.Context, step int, action schema.Actio
 
 	startedAt := time.Now()
 	toolCtx := ctx
-	cancel := func() {}
 	if r.config.ToolTimeout > 0 {
+		var cancel context.CancelFunc
 		toolCtx, cancel = context.WithTimeout(ctx, r.config.ToolTimeout)
+		defer cancel()
 	}
-	defer cancel()
 
 	observation, err := tool.Run(toolCtx, action.Args)
 	if err != nil {
@@ -313,10 +427,11 @@ func (r *Runtime) executeTool(ctx context.Context, step int, action schema.Actio
 		Step:           step,
 		ActionType:     action.Type,
 		ThoughtSummary: action.ThoughtSummary,
+		PlanItemID:     strings.TrimSpace(action.PlanItemID),
 		ToolName:       action.Tool,
 		Model:          r.config.Model,
-		LLMDuration:    decision.Duration,
-		LLMAttempts:    decision.Attempts,
+		LLMDuration:    meta.Duration,
+		LLMAttempts:    meta.Attempts,
 		Args:           traceArgs,
 		Result:         observation,
 		Duration:       duration,

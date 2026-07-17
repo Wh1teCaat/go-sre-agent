@@ -1,7 +1,7 @@
 package schema
 
 // Plan 是 LLM 为当前诊断维护的检查清单。
-// 它只是覆盖面约束，不是固定工作流；后续 plan action 可以追加或更新条目。
+// 它只是覆盖面约束，不是固定工作流；Planner 可以基于新 observation 更新条目。
 type Plan struct {
 	Reason string     `json:"reason,omitempty"`
 	Items  []PlanItem `json:"items"`
@@ -11,7 +11,7 @@ type Plan struct {
 type PlanItem struct {
 	ID     string `json:"id"`
 	Goal   string `json:"goal"`
-	Status string `json:"status,omitempty"` // pending | done | blocked
+	Status string `json:"status,omitempty"` // pending | done | blocked | insufficient
 	Reason string `json:"reason,omitempty"`
 }
 

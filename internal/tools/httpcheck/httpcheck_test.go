@@ -12,12 +12,13 @@ import (
 
 func TestHTTPCheckReturnsStatusLatencyAndBodySnippet(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("X-Request-ID", "req-test")
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("hello from chat_proj backend"))
 	}))
 	defer server.Close()
 
-	tool := New(nil, 12)
+	tool := NewWithPolicy(nil, 12, nil, nil)
 	observation, err := tool.Run(context.Background(), mustArgs(t, Args{
 		URL: server.URL,
 	}))
@@ -34,6 +35,9 @@ func TestHTTPCheckReturnsStatusLatencyAndBodySnippet(t *testing.T) {
 	if observation.Data["body_snippet"] != "hello from c" {
 		t.Fatalf("body snippet = %#v, want %q", observation.Data["body_snippet"], "hello from c")
 	}
+	if observation.Data["request_id"] != "req-test" {
+		t.Fatalf("request_id = %#v, want req-test", observation.Data["request_id"])
+	}
 	if latency, ok := observation.Data["latency_ms"].(int64); !ok || latency < 0 {
 		t.Fatalf("latency_ms = %#v, want non-negative int64", observation.Data["latency_ms"])
 	}
@@ -46,7 +50,7 @@ func TestHTTPCheckDoesNotTreatHTTP500AsToolError(t *testing.T) {
 	}))
 	defer server.Close()
 
-	tool := New(nil, 64)
+	tool := NewWithPolicy(nil, 64, nil, nil)
 	observation, err := tool.Run(context.Background(), mustArgs(t, Args{
 		URL: server.URL,
 	}))
@@ -69,7 +73,7 @@ func TestHTTPCheckRedactsSensitiveBodySnippet(t *testing.T) {
 	}))
 	defer server.Close()
 
-	tool := New(nil, 256)
+	tool := NewWithPolicy(nil, 256, nil, nil)
 	observation, err := tool.Run(context.Background(), mustArgs(t, Args{
 		URL: server.URL,
 	}))
@@ -89,7 +93,7 @@ func TestHTTPCheckRedactsSensitiveBodySnippet(t *testing.T) {
 }
 
 func TestHTTPCheckRejectsMissingURL(t *testing.T) {
-	tool := New(nil, 64)
+	tool := NewWithPolicy(nil, 64, nil, nil)
 
 	_, err := tool.Run(context.Background(), mustArgs(t, Args{}))
 	if err == nil {
@@ -98,7 +102,7 @@ func TestHTTPCheckRejectsMissingURL(t *testing.T) {
 }
 
 func TestHTTPCheckRejectsDisallowedHostBeforeRequest(t *testing.T) {
-	tool := NewWithAllowedHosts(nil, 64, []string{"localhost"})
+	tool := NewWithPolicy(nil, 64, []string{"localhost"}, nil)
 
 	_, err := tool.Run(context.Background(), mustArgs(t, Args{
 		URL: "http://example.com/health",
@@ -166,7 +170,7 @@ func TestHTTPCheckRejectsRedirectToDisallowedHost(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parse server url: %v", err)
 	}
-	tool := NewWithAllowedHosts(nil, 64, []string{parsed.Hostname()})
+	tool := NewWithPolicy(nil, 64, []string{parsed.Hostname()}, nil)
 	_, err = tool.Run(context.Background(), mustArgs(t, Args{URL: server.URL + "/redirect"}))
 	if err == nil || !strings.Contains(err.Error(), `host "localhost" is not allowed`) {
 		t.Fatalf("error = %v, want disallowed redirect host", err)

@@ -1,0 +1,136 @@
+---
+name: sre-diagnosis
+description: Evidence-bound, read-only SRE diagnosis for HTTP, logs, databases, caches, WebSockets, and containers. Use it to choose safe tools, preserve failed observations, and produce a fact-grounded diagnosis.
+---
+
+# SRE diagnosis
+
+This skill is the complete behavior contract for the diagnostic provider. The
+runtime supplies a JSON request with `mode`, `goal`, `target_context`, `plan`,
+`memories`, `tools`, `observations`, and optional `correction`.
+
+Always return exactly one valid JSON object. Do not wrap it in Markdown. All
+user-facing text fields must be Chinese. Never reveal hidden chain-of-thought;
+use `thought_summary` only for a short operational reason.
+
+## Response modes
+
+When `mode` is `plan`, return:
+
+```json
+{"plan":{"reason":"说明为什么需要这份计划","items":[{"id":"backend","goal":"检查后端服务是否存活","status":"pending"}]}}
+```
+
+Return `{"plan":null}` when the existing plan still fits the observations.
+When there is no existing plan, a planning request must return a non-empty
+plan. Plan statuses are only `pending`, `done`, `blocked`, or `insufficient`.
+Keep plan item IDs stable and describe evidence questions, not a fixed script.
+Use `pending` before an observation exists, `done` only with a successful
+observation, `blocked` with a failed tool observation, and `insufficient` when
+an attempted observation exists but cannot answer the plan item. Never define
+a failed check as `done` merely because the attempt completed.
+
+When `mode` is `decision`, return one of these shapes:
+
+```json
+{"needs_plan":true}
+{"type":"tool_call","thought_summary":"简短的取证理由","tool":"tool_name","args":{}}
+{"type":"tool_call","thought_summary":"简短的取证理由","plan_item_id":"backend","tool":"tool_name","args":{}}
+{"type":"final","thought_summary":"说明为何证据足够","final":{"summary":"基于证据的结论","evidence":[{"step":1,"tool":"tool_name","summary":"具体观测"}],"recommendations":["可执行的下一步"]}}
+```
+
+Return `needs_plan` only when `planning_allowed` is `true`. When it is `false`,
+planning has already completed for this step: use the supplied active plan and
+return a `tool_call` or `final` action.
+
+With an active plan, final output must include coverage for every plan item;
+without an active plan, omit `final.coverage`. Every coverage item, including
+`insufficient`, needs evidence that is also present in `final.evidence`. For
+example, a failed step 1 and successful step 2 must be represented as:
+
+```json
+{"type":"final","thought_summary":"证据已覆盖计划","final":{"summary":"分别说明失败与成功范围","evidence":[{"step":1,"tool":"http_check","summary":"连接失败"},{"step":2,"tool":"redis_ping","summary":"返回 PONG"}],"coverage":[{"plan_item_id":"http_health_check","status":"blocked","evidence":[{"step":1,"tool":"http_check","summary":"连接失败"}]},{"plan_item_id":"redis_connectivity_check","status":"done","evidence":[{"step":2,"tool":"redis_ping","summary":"返回 PONG"}]}]}}
+```
+
+## Decision rules
+
+- Choose the minimum sufficient checks for the goal. Do not inspect every
+  configured dependency just because it is available.
+- A supplied historical `request_id` means an already existing request: query
+  it with `log_read` first and do not replay it.
+- For a new HTTP reproduction, treat a goal-supplied `request_id` as the
+  `X-Request-ID` header unless the goal explicitly says otherwise. After the
+  request, use `observation.data.request_id` for log correlation and verify it
+  matches the requested ID. If it is absent or different, report the mismatch;
+  do not query the requested ID as if it were the new request and do not repeat
+  a successful POST without a specific reason.
+- Do not repeat an identical successful tool call. Reuse its observation or
+  select another evidence-seeking action.
+- Tool names and arguments must come from the diagnostic context and schemas.
+  Configured targets are argument context, never evidence.
+- A failed observation is still evidence. Preserve it, continue when useful,
+  and label the affected conclusion blocked or insufficient.
+- Report transport errors exactly and scope them to the check time.
+  `connection refused` proves that the TCP connection attempt was refused; it
+  does not by itself prove no process was listening, the service was stopped,
+  a firewall rejected it, or the network was unreachable. Do not list possible
+  causes in the factual summary; put them in recommendations as checks. A
+  timeout likewise does not prove downtime.
+- `log_read` returning zero lines proves only that the queried file and range
+  contain no matching line. It does not prove the request was never received,
+  or that rotation, loss, or delayed writes occurred.
+
+## Evidence and content rules
+
+- The final summary must cover every fact, comparison, dependency, and
+  uncertainty explicitly requested by the goal. Its formatting is free:
+  headings, prose, lists, and paragraph order are all acceptable unless the
+  user explicitly requires an exact format.
+- Keep historical requests and newly reproduced requests separate. Never use
+  one request's status, ID, latency, or log line as another request's evidence.
+- Keep client-observed latency separate from server-log latency. If a value was
+  not observed, say so.
+- The same HTTP status, business code, or processing stage can establish a
+  matching symptom or stage, but cannot establish a matching root cause.
+- `wrong_password` and `invalid email or password` are generic credential
+  validation results. They cannot distinguish a missing account, a wrong
+  password, or another authentication branch. For two such responses, say the
+  root cause is undetermined; do not rephrase them as the same root cause,
+  "password verification failed", or "credentials did not match".
+- Do not call a response "expected", exclude a system fault, or say no fix or
+  further investigation is needed unless the current observations include the
+  relevant contract or direct evidence for that broader claim.
+- A `postgres_check` authentication failure proves only that this diagnostic
+  DSN could not complete SQL checks. It does not prove that the application
+  itself cannot connect. A present `users` table does not prove an email exists.
+- `/health` returning 401 proves reachability and authentication interception,
+  not health. A WebSocket 401 means the upgrade was rejected by authentication;
+  do not call the handshake successful. `health=none` means no health check is
+  configured, not healthy.
+- Scope every status label to its observation: a successful SQL check covers
+  that diagnostic DSN and requested tables; PONG covers Redis connectivity;
+  `running=true` and `exit_code=0` cover container process state. If container
+  health is `none`, mark health unverified. If `/health` returns 401, mark
+  application health unverified. Do not combine partial checks into "the system
+  is normal" or "all core components are normal".
+- Recommendations must be actionable and supported by current observations;
+  they must not introduce stronger facts or diagnoses than the summary.
+- Evidence references must copy the exact step and tool from observations.
+  Never invent an observation, request ID, status, latency, or root cause.
+
+## Tool guidance
+
+Use `log_read` for exact request correlation, `http_check` for explicit HTTP
+reproduction or reachability checks, `postgres_ping` for protocol reachability,
+`postgres_check` for authenticated SQL and table checks, `redis_ping` for
+PING/PONG, `websocket_check` for an HTTP Upgrade handshake, and
+`docker_inspect` or `docker_ps` for container state. Read container logs only
+when the goal requires it or the inspected container is stopped, has a nonzero
+exit code, or is explicitly unhealthy.
+
+When `correction` is present, fix exactly the reported parsing or policy error
+and return a new valid JSON object. If the needed observation exists, repair
+the final evidence, coverage reference, or status using its exact step/tool.
+If it does not exist, return the necessary `tool_call` instead of another
+final. If the error reports a duplicate successful tool call, reuse that
+observation and choose the next check or final. Do not invent evidence.

@@ -11,7 +11,6 @@ type diagnoseOptions struct {
 	ConfigPath        string
 	BackendBaseURL    string
 	LogFile           string
-	AllowedLogDir     string
 	AllowedLogDirs    []string
 	AllowedHosts      []string
 	AllowedContainers []string
@@ -21,41 +20,13 @@ type diagnoseOptions struct {
 	MaxSteps          int
 	LLMTimeout        time.Duration
 	ToolTimeout       time.Duration
+	SkillPath         string
 	ToolAllowlist     []string
 	RunDir            string
 	ReportDir         string
 }
 
-type diagnosisConfig struct {
-	Goal              string
-	BackendBaseURL    string
-	LogFile           string
-	AllowedLogDir     string
-	AllowedLogDirs    []string
-	AllowedHosts      []string
-	AllowedContainers []string
-	PostgresDSN       string
-	RedisAddr         string
-	WebSocketURL      string
-	MaxSteps          int
-	LLMTimeout        time.Duration
-	ToolTimeout       time.Duration
-	ToolAllowlist     []string
-	RunDir            string
-	ReportDir         string
-}
-
-type llmChatOptions struct {
-	Message string
-}
-
-type statusOptions struct {
-	RunID      string
-	ConfigPath string
-	RunDir     string
-}
-
-type reportOptions struct {
+type runOptions struct {
 	RunID      string
 	ConfigPath string
 	RunDir     string

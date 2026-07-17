@@ -20,14 +20,18 @@ func NewMockProvider(actions []schema.Action) *MockProvider {
 	return &MockProvider{actions: copied}
 }
 
-func (p *MockProvider) NextAction(context.Context, Request) (schema.Action, error) {
+func (p *MockProvider) Plan(context.Context, Request) (*schema.Plan, error) {
+	return nil, nil
+}
+
+func (p *MockProvider) Next(context.Context, Request) (Decision, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
 	if p.next >= len(p.actions) {
-		return schema.Action{}, fmt.Errorf("mock provider exhausted")
+		return Decision{}, fmt.Errorf("mock provider exhausted")
 	}
 	action := p.actions[p.next]
 	p.next++
-	return action, nil
+	return Decision{Action: &action}, nil
 }

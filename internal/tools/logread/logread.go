@@ -16,10 +16,11 @@ import (
 const Name = "log_read"
 
 type Args struct {
-	Path     string   `json:"path"`
-	Lines    int      `json:"lines,omitempty"`
-	Keyword  string   `json:"keyword,omitempty"`
-	Keywords []string `json:"keywords,omitempty"`
+	Path      string   `json:"path"`
+	Lines     int      `json:"lines,omitempty"`
+	Keyword   string   `json:"keyword,omitempty"`
+	Keywords  []string `json:"keywords,omitempty"`
+	RequestID string   `json:"request_id,omitempty"`
 }
 
 type Tool struct {
@@ -92,7 +93,8 @@ func (t *Tool) Run(ctx context.Context, rawArgs json.RawMessage) (schema.Observa
 	}
 
 	keywords := normalizedKeywords(args.Keyword, args.Keywords)
-	lines, err := readLatestLines(ctx, path, limit, keywords)
+	requestID := strings.TrimSpace(args.RequestID)
+	lines, err := readLatestLines(ctx, path, limit, keywords, requestID)
 	if err != nil {
 		return schema.Observation{}, err
 	}
@@ -105,6 +107,9 @@ func (t *Tool) Run(ctx context.Context, rawArgs json.RawMessage) (schema.Observa
 	} else if len(keywords) > 1 {
 		summary = fmt.Sprintf("read %d log lines matching %q from %s", len(lines), keywords, path)
 	}
+	if requestID != "" {
+		summary = fmt.Sprintf("read %d log lines for request_id %q from %s", len(lines), requestID, path)
+	}
 
 	return schema.Observation{
 		Tool:    Name,
@@ -114,6 +119,7 @@ func (t *Tool) Run(ctx context.Context, rawArgs json.RawMessage) (schema.Observa
 			"lines":      lines,
 			"lines_read": len(lines),
 			"keywords":   keywords,
+			"request_id": requestID,
 		},
 	}, nil
 }
@@ -155,7 +161,7 @@ func isInsideDir(path string, dir string) bool {
 }
 
 // readLatestLines 扫描文件时只保留最后 limit 条匹配行，避免大日志占满内存。
-func readLatestLines(ctx context.Context, path string, limit int, keywords []string) ([]string, error) {
+func readLatestLines(ctx context.Context, path string, limit int, keywords []string, requestID string) ([]string, error) {
 	file, err := os.Open(path)
 	if err != nil {
 		return nil, fmt.Errorf("open log file: %w", err)
@@ -174,7 +180,7 @@ func readLatestLines(ctx context.Context, path string, limit int, keywords []str
 		default:
 		}
 		line := scanner.Text()
-		if !matchesAnyKeyword(line, keywords) {
+		if !matchesRequestID(line, requestID) || !matchesAnyKeyword(line, keywords) {
 			continue
 		}
 		ring[matched%limit] = line
@@ -194,6 +200,25 @@ func readLatestLines(ctx context.Context, path string, limit int, keywords []str
 		lines[i] = ring[(start+i)%limit]
 	}
 	return lines, nil
+}
+
+func matchesRequestID(line string, requestID string) bool {
+	if requestID == "" {
+		return true
+	}
+	start := strings.LastIndex(line, "\t{")
+	if start >= 0 {
+		start++
+	} else {
+		start = strings.IndexByte(line, '{')
+	}
+	if start < 0 {
+		return false
+	}
+	var fields struct {
+		RequestID string `json:"request_id"`
+	}
+	return json.Unmarshal([]byte(line[start:]), &fields) == nil && fields.RequestID == requestID
 }
 
 func normalizedKeywords(keyword string, keywords []string) []string {
@@ -225,13 +250,14 @@ func matchesAnyKeyword(line string, keywords []string) bool {
 func Spec() tools.ToolSpec {
 	return tools.ToolSpec{
 		Name:        Name,
-		Description: "Read the latest lines from an allowed log file with optional single or multiple keyword filtering.",
+		Description: "Read the latest lines from an allowed log file, optionally filtered by exact request_id and keywords.",
 		Schema: tools.ToolSchema{
 			Properties: map[string]tools.ArgSpec{
-				"path":     {Type: "string", Required: true, Description: "Log file path under an allowed directory."},
-				"lines":    {Type: "number", Description: "Number of latest lines to read."},
-				"keyword":  {Type: "string", Description: "Optional keyword filter."},
-				"keywords": {Type: "array", Description: "Optional keyword filters; a line matches when it contains any keyword."},
+				"path":       {Type: "string", Required: true, Description: "Log file path under an allowed directory."},
+				"lines":      {Type: "number", Description: "Number of latest lines to read."},
+				"keyword":    {Type: "string", Description: "Optional keyword filter."},
+				"keywords":   {Type: "array", Description: "Optional keyword filters; a line matches when it contains any keyword."},
+				"request_id": {Type: "string", Description: "Optional exact request_id from structured JSON log fields; combined with keyword filters."},
 			},
 		},
 	}

@@ -26,7 +26,7 @@ func TestWebSocketCheckReturnsSuccessfulHandshakeObservation(t *testing.T) {
 		w.WriteHeader(http.StatusSwitchingProtocols)
 	})
 
-	tool := New(nil)
+	tool := NewWithAllowedHosts(nil, nil)
 	observation, err := tool.Run(context.Background(), mustArgs(t, Args{
 		URL: "ws://" + addr + "/ws",
 	}))
@@ -54,7 +54,7 @@ func TestWebSocketCheckReturnsFailedHandshakeObservationForHTTP500(t *testing.T)
 		_, _ = w.Write([]byte("upgrade failed"))
 	})
 
-	tool := New(nil)
+	tool := NewWithAllowedHosts(nil, nil)
 	observation, err := tool.Run(context.Background(), mustArgs(t, Args{
 		URL: "ws://" + addr + "/ws",
 	}))
@@ -71,7 +71,7 @@ func TestWebSocketCheckReturnsFailedHandshakeObservationForHTTP500(t *testing.T)
 }
 
 func TestWebSocketCheckRejectsMissingURL(t *testing.T) {
-	tool := New(nil)
+	tool := NewWithAllowedHosts(nil, nil)
 
 	_, err := tool.Run(context.Background(), mustArgs(t, Args{}))
 	if err == nil {

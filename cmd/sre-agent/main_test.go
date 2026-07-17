@@ -23,6 +23,11 @@ import (
 	"github.com/y2/go-sre-agent/internal/trace"
 )
 
+func diagnoseOnce(ctx context.Context, opts diagnoseOptions, mockScenario string) (string, error) {
+	result, err := startDiagnosisRun(ctx, opts, mockScenario)
+	return result.Markdown, err
+}
+
 func TestRunDiagnoseLogin500ScenarioExecutesHTTPAndLogTools(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/v1/user/login" {
@@ -92,9 +97,11 @@ targets:
 		ToolTimeout: time.Second,
 		RunDir:      runDir,
 	}, "login-500")
-	err = saveDiagnosisRun(result)
 	if err != nil {
-		t.Fatalf("start and save diagnosis: %v", err)
+		t.Fatalf("start diagnosis: %v", err)
+	}
+	if err := saveDiagnosisRun(result); err != nil {
+		t.Fatalf("save diagnosis: %v", err)
 	}
 	if result.State.RunID == "" {
 		t.Fatal("run id is empty")
@@ -133,9 +140,11 @@ paths:
 		Goal:       "检查骨架",
 		ConfigPath: configPath,
 	}, "skeleton")
-	err = saveDiagnosisRun(result)
 	if err != nil {
-		t.Fatalf("start and save diagnosis: %v", err)
+		t.Fatalf("start diagnosis: %v", err)
+	}
+	if err := saveDiagnosisRun(result); err != nil {
+		t.Fatalf("save diagnosis: %v", err)
 	}
 
 	if _, err := runstore.NewStore(runDir).Load(result.State.RunID); err != nil {
@@ -163,8 +172,9 @@ func TestRunStatusAndReportLoadPersistedRun(t *testing.T) {
 		},
 		Trace: []trace.Entry{
 			{
-				Step:     1,
-				ToolName: "http_check",
+				Step:       1,
+				PlanItemID: "backend",
+				ToolName:   "http_check",
 				Result: schema.Observation{
 					Tool:    "http_check",
 					Summary: "returned 200",
@@ -179,7 +189,7 @@ func TestRunStatusAndReportLoadPersistedRun(t *testing.T) {
 		t.Fatalf("save run: %v", err)
 	}
 
-	status, err := readDiagnosisStatus(statusOptions{RunID: "run_done", RunDir: runDir})
+	status, err := readDiagnosisStatus(runOptions{RunID: "run_done", RunDir: runDir})
 	if err != nil {
 		t.Fatalf("run status: %v", err)
 	}
@@ -189,7 +199,7 @@ func TestRunStatusAndReportLoadPersistedRun(t *testing.T) {
 		}
 	}
 
-	markdown, err := renderDiagnosisReport(reportOptions{RunID: "run_done", RunDir: runDir})
+	markdown, err := renderDiagnosisReport(runOptions{RunID: "run_done", RunDir: runDir})
 	if err != nil {
 		t.Fatalf("run report: %v", err)
 	}
@@ -256,8 +266,9 @@ func TestResumeDiagnosisRunContinuesPersistedRunWithExistingTrace(t *testing.T) 
 		},
 		Trace: []trace.Entry{
 			{
-				Step:     1,
-				ToolName: "http_check",
+				Step:       1,
+				PlanItemID: "backend",
+				ToolName:   "http_check",
 				Result: schema.Observation{
 					Tool:    "http_check",
 					Summary: "returned 200",
@@ -286,6 +297,9 @@ func TestResumeDiagnosisRunContinuesPersistedRunWithExistingTrace(t *testing.T) 
 			t.Fatalf("decode request: %v\n%s", err, body)
 		}
 		content := `{"type":"final","thought_summary":"existing trace is enough","final":{"summary":"resume completed","evidence":[{"step":1,"tool":"http_check","summary":"backend returned ok"}],"coverage":[{"plan_item_id":"backend","status":"done","evidence":[{"step":1,"tool":"http_check","summary":"backend returned ok"}]}]}}`
+		if strings.Contains(gotRequest.Messages[1].Content, `"mode": "plan"`) {
+			content = `{"plan":null}`
+		}
 		w.Header().Set("Content-Type", "application/json")
 		if err := json.NewEncoder(w).Encode(map[string]any{
 			"choices": []map[string]any{
@@ -322,7 +336,7 @@ func TestResumeDiagnosisRunContinuesPersistedRunWithExistingTrace(t *testing.T) 
 		t.Fatalf("error = %q, want empty", result.State.Error)
 	}
 	contextMessage := gotRequest.Messages[1].Content
-	for _, want := range []string{`"step": 2`, "returned 200", `"status": 200`, `"id": "backend"`} {
+	for _, want := range []string{`"step": 2`, "returned 200", `"status": 200`, `"id": "backend"`, `"plan_item_id": "backend"`} {
 		if !strings.Contains(contextMessage, want) {
 			t.Fatalf("resume request missing %q:\n%s", want, contextMessage)
 		}
@@ -477,16 +491,12 @@ func TestRunDiagnoseUsesOpenAICompatibleChatClientFromEnvWhenNoMockScenario(t *t
 		if err := json.Unmarshal(body, &gotRequest); err != nil {
 			t.Fatalf("decode request: %v\n%s", err, body)
 		}
+		content := `{"type":"final","thought_summary":"smoke complete","final":{"summary":"真实 provider 已接入"}}`
+		if strings.Contains(gotRequest.Messages[1].Content, `"mode": "plan"`) {
+			content = `{"plan":null}`
+		}
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{
-			"choices": [
-				{
-					"message": {
-						"content": "{\"type\":\"final\",\"thought_summary\":\"smoke complete\",\"final\":{\"summary\":\"真实 provider 已接入\"}}"
-					}
-				}
-			]
-		}`))
+		_ = json.NewEncoder(w).Encode(map[string]any{"choices": []map[string]any{{"message": map[string]string{"content": content}}}})
 	}))
 	defer server.Close()
 	t.Setenv("OPENAI_BASE_URL", server.URL)
@@ -542,7 +552,7 @@ targets:
 }
 
 func TestTargetContextDoesNotLeakMalformedPostgresDSN(t *testing.T) {
-	context := targetContextForDiagnose(diagnosisConfig{
+	context := targetContextForDiagnose(diagnoseOptions{
 		PostgresDSN: "postgres://app:secret@db.local/%zz",
 	})
 
@@ -555,7 +565,7 @@ func TestTargetContextDoesNotLeakMalformedPostgresDSN(t *testing.T) {
 }
 
 func TestToolArgOverridesPinConfiguredDependencyTargets(t *testing.T) {
-	overrides := toolArgOverridesForDiagnose(diagnosisConfig{
+	overrides := toolArgOverridesForDiagnose(diagnoseOptions{
 		PostgresDSN: "postgres://app:secret@db.local/chat",
 		RedisAddr:   "redis.local:6379",
 	})
@@ -601,8 +611,12 @@ func TestRunDiagnoseRealProviderCanDriveToolLoop(t *testing.T) {
 		content := ""
 		switch llmCalls {
 		case 1:
-			content = fmt.Sprintf(`{"type":"tool_call","thought_summary":"check backend health","tool":"http_check","args":{"url":%q}}`, backend.URL+"/health")
+			content = `{"plan":null}`
 		case 2:
+			content = fmt.Sprintf(`{"type":"tool_call","thought_summary":"check backend health","tool":"http_check","args":{"url":%q}}`, backend.URL+"/health")
+		case 3:
+			content = `{"plan":null}`
+		case 4:
 			content = `{"type":"final","thought_summary":"backend evidence is enough","final":{"summary":"LLM tool loop complete","evidence":[{"step":1,"tool":"http_check","summary":"backend returned ok"}]}}`
 		default:
 			t.Fatalf("unexpected llm call %d", llmCalls)
@@ -647,16 +661,16 @@ targets:
 	if backendHits != 1 {
 		t.Fatalf("backend hits = %d, want 1", backendHits)
 	}
-	if llmCalls != 2 {
-		t.Fatalf("llm calls = %d, want 2", llmCalls)
+	if llmCalls != 4 {
+		t.Fatalf("llm calls = %d, want 4", llmCalls)
 	}
-	if len(gotRequests) != 2 {
-		t.Fatalf("captured llm requests = %d, want 2", len(gotRequests))
+	if len(gotRequests) != 4 {
+		t.Fatalf("captured llm requests = %d, want 4", len(gotRequests))
 	}
 	if !strings.Contains(gotRequests[0].Messages[1].Content, "target_context") {
 		t.Fatalf("first request missing target context:\n%s", gotRequests[0].Messages[1].Content)
 	}
-	secondContext := gotRequests[1].Messages[1].Content
+	secondContext := gotRequests[3].Messages[1].Content
 	for _, want := range []string{"http_check", "returned 200", `"status": 200`} {
 		if !strings.Contains(secondContext, want) {
 			t.Fatalf("second request missing %q:\n%s", want, secondContext)
@@ -705,9 +719,7 @@ func TestRunLLMChatReturnsRawModelContent(t *testing.T) {
 	defer server.Close()
 	t.Setenv("OPENAI_BASE_URL", server.URL)
 
-	content, err := chatWithLLM(context.Background(), llmChatOptions{
-		Message: "ping",
-	})
+	content, err := chatWithLLM(context.Background(), "ping")
 	if err != nil {
 		t.Fatalf("run llm chat: %v", err)
 	}
@@ -721,14 +733,14 @@ func TestRunLLMChatReturnsRawModelContent(t *testing.T) {
 	if gotRequest.ResponseFormat != nil {
 		t.Fatalf("response_format = %#v, want nil for raw chat", gotRequest.ResponseFormat)
 	}
-	if len(gotRequest.Messages) != 2 {
-		t.Fatalf("messages = %d, want 2", len(gotRequest.Messages))
+	if len(gotRequest.Messages) != 1 {
+		t.Fatalf("messages = %d, want 1", len(gotRequest.Messages))
 	}
-	if gotRequest.Messages[0].Role != string(llm.RoleSystem) {
-		t.Fatalf("first role = %q, want system", gotRequest.Messages[0].Role)
+	if gotRequest.Messages[0].Role != string(llm.RoleUser) {
+		t.Fatalf("first role = %q, want user", gotRequest.Messages[0].Role)
 	}
-	if gotRequest.Messages[1].Content != "ping" {
-		t.Fatalf("user message = %q, want ping", gotRequest.Messages[1].Content)
+	if gotRequest.Messages[0].Content != "ping" {
+		t.Fatalf("user message = %q, want ping", gotRequest.Messages[0].Content)
 	}
 }
 
@@ -762,11 +774,11 @@ func TestRunLLMPingUsesDefaultPingMessage(t *testing.T) {
 	if content != "ok" {
 		t.Fatalf("content = %q, want ok", content)
 	}
-	if len(gotRequest.Messages) != 2 {
-		t.Fatalf("messages = %d, want 2", len(gotRequest.Messages))
+	if len(gotRequest.Messages) != 1 {
+		t.Fatalf("messages = %d, want 1", len(gotRequest.Messages))
 	}
-	if !strings.Contains(gotRequest.Messages[1].Content, "pong") {
-		t.Fatalf("ping message = %q, want pong instruction", gotRequest.Messages[1].Content)
+	if !strings.Contains(gotRequest.Messages[0].Content, "pong") {
+		t.Fatalf("ping message = %q, want pong instruction", gotRequest.Messages[0].Content)
 	}
 }
 
@@ -816,8 +828,8 @@ targets:
 	if cfg.LogFile != "/configured/logs/app.log" {
 		t.Fatalf("log file = %q, want config value", cfg.LogFile)
 	}
-	if cfg.AllowedLogDir != "/configured/logs" {
-		t.Fatalf("allowed log dir = %q, want config value", cfg.AllowedLogDir)
+	if len(cfg.AllowedLogDirs) != 1 || cfg.AllowedLogDirs[0] != "/configured/logs" {
+		t.Fatalf("allowed log dirs = %#v, want config value", cfg.AllowedLogDirs)
 	}
 	if len(cfg.AllowedHosts) != 2 || cfg.AllowedHosts[0] != "configured.local" || cfg.AllowedHosts[1] != "localhost" {
 		t.Fatalf("allowed hosts = %#v, want configured.local/localhost", cfg.AllowedHosts)
@@ -851,6 +863,35 @@ targets:
 	}
 }
 
+func TestResolveDiagnosisConfigLoadsDefaultConfigPath(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.Mkdir(filepath.Join(dir, "configs"), 0o755); err != nil {
+		t.Fatalf("create configs dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "configs", "config.yaml"), []byte(`
+targets:
+  backend_base_url: http://automatic:8080
+`), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	oldDir, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("get working dir: %v", err)
+	}
+	if err := os.Chdir(dir); err != nil {
+		t.Fatalf("change working dir: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chdir(oldDir) })
+
+	cfg, err := resolveDiagnosisConfig(diagnoseOptions{Goal: "diagnose"})
+	if err != nil {
+		t.Fatalf("resolve config: %v", err)
+	}
+	if cfg.BackendBaseURL != "http://automatic:8080" {
+		t.Fatalf("backend base URL = %q, want automatic config value", cfg.BackendBaseURL)
+	}
+}
+
 func TestResolveDiagnosisConfigAppliesOptionOverrides(t *testing.T) {
 	configPath := writeTestConfig(t, `
 agent:
@@ -879,7 +920,7 @@ targets:
 		ConfigPath:        configPath,
 		BackendBaseURL:    "http://override:8080",
 		LogFile:           "/override/logs/app.log",
-		AllowedLogDir:     "/override/logs",
+		AllowedLogDirs:    []string{"/override/logs"},
 		AllowedHosts:      []string{"override.local"},
 		AllowedContainers: []string{"override-backend"},
 		PostgresDSN:       "postgres://override:secret@db:5432/app?sslmode=disable",
@@ -899,8 +940,8 @@ targets:
 	if cfg.BackendBaseURL != "http://override:8080" {
 		t.Fatalf("backend base URL = %q, want override", cfg.BackendBaseURL)
 	}
-	if cfg.LogFile != "/override/logs/app.log" || cfg.AllowedLogDir != "/override/logs" {
-		t.Fatalf("log config = %q/%q, want override", cfg.LogFile, cfg.AllowedLogDir)
+	if cfg.LogFile != "/override/logs/app.log" || len(cfg.AllowedLogDirs) != 1 || cfg.AllowedLogDirs[0] != "/override/logs" {
+		t.Fatalf("log config = %q/%#v, want override", cfg.LogFile, cfg.AllowedLogDirs)
 	}
 	if len(cfg.AllowedHosts) != 1 || cfg.AllowedHosts[0] != "override.local" {
 		t.Fatalf("allowed hosts = %#v, want override", cfg.AllowedHosts)
@@ -950,7 +991,7 @@ paths:
 		t.Fatalf("save run: %v", err)
 	}
 
-	status, err := readDiagnosisStatus(statusOptions{RunID: "run_done", ConfigPath: configPath})
+	status, err := readDiagnosisStatus(runOptions{RunID: "run_done", ConfigPath: configPath})
 	if err != nil {
 		t.Fatalf("run status: %v", err)
 	}
@@ -958,7 +999,7 @@ paths:
 		t.Fatalf("status missing run id:\n%s", status)
 	}
 
-	markdown, err := renderDiagnosisReport(reportOptions{RunID: "run_done", ConfigPath: configPath})
+	markdown, err := renderDiagnosisReport(runOptions{RunID: "run_done", ConfigPath: configPath})
 	if err != nil {
 		t.Fatalf("run report: %v", err)
 	}

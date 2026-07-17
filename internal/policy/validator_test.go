@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/y2/go-sre-agent/internal/schema"
 	"github.com/y2/go-sre-agent/internal/tools"
@@ -13,9 +12,7 @@ import (
 
 func TestValidatorAllowsWhitelistedTool(t *testing.T) {
 	validator := NewValidator(Config{
-		MaxSteps:      3,
 		ToolAllowlist: []string{"http_check"},
-		ToolTimeout:   time.Second,
 	})
 
 	action := schema.Action{
@@ -31,9 +28,7 @@ func TestValidatorAllowsWhitelistedTool(t *testing.T) {
 
 func TestValidatorRejectsDisallowedTool(t *testing.T) {
 	validator := NewValidator(Config{
-		MaxSteps:      3,
 		ToolAllowlist: []string{"http_check"},
-		ToolTimeout:   time.Second,
 	})
 
 	action := schema.Action{
@@ -49,9 +44,7 @@ func TestValidatorRejectsDisallowedTool(t *testing.T) {
 
 func TestValidatorAllowsFinalAction(t *testing.T) {
 	validator := NewValidator(Config{
-		MaxSteps:      3,
 		ToolAllowlist: []string{"http_check"},
-		ToolTimeout:   time.Second,
 	})
 
 	action := schema.Action{
@@ -66,58 +59,61 @@ func TestValidatorAllowsFinalAction(t *testing.T) {
 	}
 }
 
-func TestValidatorAllowsPlanAction(t *testing.T) {
+func TestValidatorAllowsPlanUpdate(t *testing.T) {
 	validator := NewValidator(Config{})
-	action := schema.Action{
-		Type: schema.ActionTypePlan,
-		Plan: &schema.Plan{
-			Items: []schema.PlanItem{
-				{ID: "backend", Goal: "检查后端服务是否存活", Status: "pending"},
-			},
+	plan := schema.Plan{
+		Items: []schema.PlanItem{
+			{ID: "backend", Goal: "检查后端服务是否存活", Status: "pending"},
+			{ID: "logs", Goal: "检查后端日志", Status: "insufficient"},
 		},
 	}
 
-	if err := validator.ValidateAction(action); err != nil {
-		t.Fatalf("validate plan action: %v", err)
+	if err := validator.ValidatePlan(plan); err != nil {
+		t.Fatalf("validate plan update: %v", err)
 	}
 }
 
-func TestValidatorRejectsInvalidPlanAction(t *testing.T) {
+func TestValidatorRejectsInvalidPlanUpdate(t *testing.T) {
 	validator := NewValidator(Config{})
-	action := schema.Action{
-		Type: schema.ActionTypePlan,
-		Plan: &schema.Plan{
-			Items: []schema.PlanItem{
-				{ID: "", Goal: "检查后端服务是否存活"},
-			},
+	plan := schema.Plan{
+		Items: []schema.PlanItem{
+			{ID: "", Goal: "检查后端服务是否存活"},
 		},
 	}
 
-	err := validator.ValidateAction(action)
+	err := validator.ValidatePlan(plan)
 	if err == nil {
-		t.Fatal("validate plan action succeeded, want item id error")
+		t.Fatal("validate plan update succeeded, want item id error")
 	}
 	if !strings.Contains(err.Error(), "plan item requires id") {
 		t.Fatalf("error = %q, want plan item id error", err.Error())
 	}
 }
 
-func TestValidatorRejectsEmptyPlanAction(t *testing.T) {
+func TestValidatorRejectsEmptyPlanUpdate(t *testing.T) {
 	validator := NewValidator(Config{})
-	err := validator.ValidateAction(schema.Action{
-		Type: schema.ActionTypePlan,
-		Plan: &schema.Plan{},
-	})
-	if err == nil || !strings.Contains(err.Error(), "plan action requires at least one item") {
+	err := validator.ValidatePlan(schema.Plan{})
+	if err == nil || !strings.Contains(err.Error(), "plan update requires at least one item") {
 		t.Fatalf("error = %v, want empty plan error", err)
 	}
 }
 
+func TestValidatorRequiresToolCallToReferenceActivePlan(t *testing.T) {
+	validator := NewValidator(Config{})
+	plan := &schema.Plan{Items: []schema.PlanItem{{ID: "backend", Goal: "检查后端"}}}
+	action := schema.Action{Type: schema.ActionTypeToolCall, Tool: "http_check"}
+
+	if err := validator.ValidatePlanAdherence(action, plan); err == nil || !strings.Contains(err.Error(), "requires plan_item_id") {
+		t.Fatalf("error = %v, want plan_item_id requirement", err)
+	}
+	action.PlanItemID = "backend"
+	if err := validator.ValidatePlanAdherence(action, plan); err != nil {
+		t.Fatalf("validate plan adherence: %v", err)
+	}
+}
+
 func TestValidatorRejectsFinalActionWithoutSummary(t *testing.T) {
-	validator := NewValidator(Config{
-		MaxSteps:    3,
-		ToolTimeout: time.Second,
-	})
+	validator := NewValidator(Config{})
 
 	action := schema.Action{
 		Type: schema.ActionTypeFinal,
@@ -201,6 +197,20 @@ func TestValidatorRejectsCompletedCoverageWithoutEvidence(t *testing.T) {
 	}
 }
 
+func TestValidatorRejectsInsufficientCoverageWithoutAttemptEvidence(t *testing.T) {
+	validator := NewValidator(Config{})
+	plan := schema.Plan{Items: []schema.PlanItem{{ID: "logs", Goal: "检查日志"}}}
+	diagnosis := &schema.Diagnosis{
+		Summary:  "未检查日志",
+		Coverage: []schema.CoverageItem{{PlanItemID: "logs", Status: "insufficient"}},
+	}
+
+	err := validator.ValidateFinalCoverage(diagnosis, plan)
+	if err == nil || !strings.Contains(err.Error(), "requires evidence") {
+		t.Fatalf("error = %v, want insufficient coverage evidence error", err)
+	}
+}
+
 func TestValidatorRejectsDuplicateOrUnknownCoverageItems(t *testing.T) {
 	validator := NewValidator(Config{})
 	plan := schema.Plan{Items: []schema.PlanItem{{ID: "backend", Goal: "检查后端"}}}
@@ -248,13 +258,116 @@ func TestValidatorAllowsCoveredPlanItems(t *testing.T) {
 	if err := validator.ValidateFinalCoverage(diagnosis, plan); err != nil {
 		t.Fatalf("validate coverage: %v", err)
 	}
+	entries := []trace.Entry{{Step: 1, PlanItemID: "backend", ToolName: "http_check"}}
+	if err := validator.ValidateFinalEvidence(diagnosis, entries); err != nil {
+		t.Fatalf("validate evidence: %v", err)
+	}
+}
+
+func TestValidatorRejectsClaimsBeyondGenericAuthAndHealthEvidence(t *testing.T) {
+	validator := NewValidator(Config{})
+	entries := []trace.Entry{
+		{Step: 1, ToolName: "log_read", Result: schema.Observation{Data: map[string]any{"lines": []string{`{"code":"wrong_password","error":"invalid email or password"}`}}}},
+		{Step: 2, ToolName: "http_check", Result: schema.Observation{Summary: "GET http://localhost:8080/health returned 401", Data: map[string]any{"status": 401}}},
+		{Step: 3, ToolName: "docker_inspect", Result: schema.Observation{Summary: "running=true exit_code=0 health=none"}},
+		{Step: 4, ToolName: "http_check", Result: schema.Observation{Error: "dial tcp 127.0.0.1:65534: connect: connection refused"}},
+	}
+
+	for name, summary := range map[string]string{
+		"credential root cause": "两次请求根因表现一致，均为密码校验失败。",
+		"aggregate health":      "所有核心组件运行正常，系统正常。",
+		"transport cause":       "连接被拒绝，证明该端口无服务监听或网络不可达。",
+		"transport speculation": "连接被拒绝，通常意味着无进程监听或防火墙拦截。",
+	} {
+		t.Run(name, func(t *testing.T) {
+			diagnosis := &schema.Diagnosis{Summary: summary, Evidence: []schema.Evidence{{Step: 1, Tool: "log_read"}}}
+			if err := validator.ValidateFinalEvidence(diagnosis, entries); err == nil {
+				t.Fatalf("summary %q passed semantic validation", summary)
+			}
+		})
+	}
+
+	diagnosis := &schema.Diagnosis{
+		Summary:  "两次请求现象相同，但无法确定根因是否相同；应用和容器健康状态未能验证。",
+		Evidence: []schema.Evidence{{Step: 1, Tool: "log_read"}},
+	}
+	if err := validator.ValidateFinalEvidence(diagnosis, entries); err != nil {
+		t.Fatalf("cautious summary rejected: %v", err)
+	}
+}
+
+func TestValidatorRejectsCoverageEvidenceFromDifferentPlanItem(t *testing.T) {
+	validator := NewValidator(Config{})
+	diagnosis := &schema.Diagnosis{
+		Summary:  "PostgreSQL 可达",
+		Evidence: []schema.Evidence{{Step: 1, Tool: "docker_ps"}},
+		Coverage: []schema.CoverageItem{{
+			PlanItemID: "postgres",
+			Status:     "done",
+			Evidence:   []schema.Evidence{{Step: 1, Tool: "docker_ps"}},
+		}},
+	}
+	entries := []trace.Entry{{Step: 1, PlanItemID: "redis", ToolName: "docker_ps"}}
+
+	err := validator.ValidateFinalEvidence(diagnosis, entries)
+	if err == nil || !strings.Contains(err.Error(), `assigned to plan item "redis"`) {
+		t.Fatalf("error = %v, want plan item mismatch", err)
+	}
+}
+
+func TestValidatorRequiresCoverageStatusToMatchTraceOutcome(t *testing.T) {
+	for _, test := range []struct {
+		name       string
+		status     string
+		traceError string
+		want       string
+	}{
+		{name: "done needs success", status: "done", traceError: "connection refused", want: "requires successful evidence"},
+		{name: "blocked needs failure", status: "blocked", want: "requires failed evidence"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			validator := NewValidator(Config{})
+			diagnosis := &schema.Diagnosis{
+				Summary:  "checked",
+				Evidence: []schema.Evidence{{Step: 1, Tool: "http_check"}},
+				Coverage: []schema.CoverageItem{{
+					PlanItemID: "backend",
+					Status:     test.status,
+					Evidence:   []schema.Evidence{{Step: 1, Tool: "http_check"}},
+				}},
+			}
+			entries := []trace.Entry{{Step: 1, PlanItemID: "backend", ToolName: "http_check", Error: test.traceError}}
+
+			err := validator.ValidateFinalEvidence(diagnosis, entries)
+			if err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("error = %v, want %q", err, test.want)
+			}
+		})
+	}
+}
+
+func TestValidatorAllowsInsufficientCoverageAfterAttempt(t *testing.T) {
+	validator := NewValidator(Config{})
+	plan := schema.Plan{Items: []schema.PlanItem{{ID: "logs", Goal: "检查日志"}}}
+	evidence := schema.Evidence{Step: 1, Tool: "log_read"}
+	diagnosis := &schema.Diagnosis{
+		Summary:  "日志证据不足",
+		Evidence: []schema.Evidence{evidence},
+		Coverage: []schema.CoverageItem{{PlanItemID: "logs", Status: "insufficient", Evidence: []schema.Evidence{evidence}}},
+	}
+	entries := []trace.Entry{{Step: 1, PlanItemID: "logs", ToolName: "log_read"}}
+
+	if err := validator.ValidateFinalCoverage(diagnosis, plan); err != nil {
+		t.Fatalf("validate coverage: %v", err)
+	}
+	if err := validator.ValidateFinalEvidence(diagnosis, entries); err != nil {
+		t.Fatalf("validate evidence: %v", err)
+	}
 }
 
 func TestValidatorRejectsMissingRequiredToolArg(t *testing.T) {
 	validator := NewValidator(Config{
-		MaxSteps:      3,
 		ToolAllowlist: []string{"http_check"},
-		ToolTimeout:   time.Second,
 		ToolSchemas: map[string]tools.ToolSchema{
 			"http_check": {
 				Properties: map[string]tools.ArgSpec{
@@ -281,9 +394,7 @@ func TestValidatorRejectsMissingRequiredToolArg(t *testing.T) {
 
 func TestValidatorRejectsWrongToolArgType(t *testing.T) {
 	validator := NewValidator(Config{
-		MaxSteps:      3,
 		ToolAllowlist: []string{"log_read"},
-		ToolTimeout:   time.Second,
 		ToolSchemas: map[string]tools.ToolSchema{
 			"log_read": {
 				Properties: map[string]tools.ArgSpec{
@@ -311,9 +422,7 @@ func TestValidatorRejectsWrongToolArgType(t *testing.T) {
 
 func TestValidatorRejectsUnknownToolArgWhenSchemaIsKnown(t *testing.T) {
 	validator := NewValidator(Config{
-		MaxSteps:      3,
 		ToolAllowlist: []string{"http_check"},
-		ToolTimeout:   time.Second,
 		ToolSchemas: map[string]tools.ToolSchema{
 			"http_check": {
 				Properties: map[string]tools.ArgSpec{

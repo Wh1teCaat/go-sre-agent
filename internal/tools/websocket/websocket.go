@@ -32,10 +32,6 @@ type Tool struct {
 	allowedHosts tools.AllowedHosts
 }
 
-func New(dialer *net.Dialer) *Tool {
-	return NewWithAllowedHosts(dialer, nil)
-}
-
 func NewWithAllowedHosts(dialer *net.Dialer, allowedHosts []string) *Tool {
 	if dialer == nil {
 		dialer = &net.Dialer{}

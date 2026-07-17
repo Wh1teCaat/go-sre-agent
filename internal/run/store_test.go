@@ -28,8 +28,9 @@ func TestStoreSavesAndLoadsRunState(t *testing.T) {
 		},
 		Trace: []trace.Entry{
 			{
-				Step:     1,
-				ToolName: "http_check",
+				Step:       1,
+				PlanItemID: "login",
+				ToolName:   "http_check",
 				Result: schema.Observation{
 					Tool:    "http_check",
 					Summary: "returned 500",
@@ -60,6 +61,9 @@ func TestStoreSavesAndLoadsRunState(t *testing.T) {
 	}
 	if len(loaded.Trace) != 1 || loaded.Trace[0].ToolName != "http_check" {
 		t.Fatalf("trace = %#v", loaded.Trace)
+	}
+	if loaded.Trace[0].PlanItemID != "login" {
+		t.Fatalf("trace plan item = %q, want login", loaded.Trace[0].PlanItemID)
 	}
 	if len(loaded.Plan.Items) != 1 || loaded.Plan.Items[0].ID != "login" {
 		t.Fatalf("plan = %#v", loaded.Plan)

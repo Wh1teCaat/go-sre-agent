@@ -94,6 +94,28 @@ func TestLogReadFiltersMultipleKeywordsInOneRead(t *testing.T) {
 	}
 }
 
+func TestLogReadFiltersExactRequestID(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "app.log")
+	writeLog(t, path, "2026-07-14T13:04:47Z\twarn\tHTTPBusinessError\t{\"request_id\":\"req-123\",\"error\":\"missing token\"}\n"+
+		"2026-07-14T13:04:47Z\tinfo\tHTTPRequest\t{\"request_id\":\"req-123\",\"status\":401}\n"+
+		"2026-07-14T13:04:48Z\tinfo\tHTTPRequest\t{\"request_id\":\"req-1234\",\"status\":200}\n")
+
+	observation, err := New([]string{dir}, 1000).Run(context.Background(), mustLogArgs(t, Args{
+		Path:      path,
+		Lines:     10,
+		RequestID: "req-123",
+	}))
+	if err != nil {
+		t.Fatalf("run log read: %v", err)
+	}
+
+	lines := observation.Data["lines"].([]string)
+	if len(lines) != 2 || !strings.Contains(lines[0], "HTTPBusinessError") || !strings.Contains(lines[1], "HTTPRequest") {
+		t.Fatalf("lines = %#v, want complete req-123 flow", lines)
+	}
+}
+
 func TestLogReadRedactsSensitiveLogLines(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "app.log")
