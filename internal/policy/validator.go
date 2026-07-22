@@ -43,8 +43,12 @@ func (v *Validator) ValidatePlan(plan schema.Plan) error {
 			return fmt.Errorf("duplicate plan item id %q", id)
 		}
 		seen[id] = struct{}{}
-		if strings.TrimSpace(item.Goal) == "" {
+		goal := strings.TrimSpace(item.Goal)
+		if goal == "" {
 			return fmt.Errorf("plan item %q requires goal", id)
+		}
+		if goal == id {
+			return fmt.Errorf("plan item %q goal must describe the check instead of repeating its id", id)
 		}
 		if item.Status != "" && !validPlanStatus(item.Status) {
 			return fmt.Errorf("plan item %q has unsupported status %q", id, item.Status)
@@ -109,9 +113,6 @@ func (v *Validator) ValidateFinalEvidence(diagnosis *schema.Diagnosis, entries [
 			if !ok {
 				return fmt.Errorf("coverage item %q references evidence step %d tool %q with no matching trace entry", planItemID, evidence.Step, evidence.Tool)
 			}
-			if strings.TrimSpace(entry.PlanItemID) != planItemID {
-				return fmt.Errorf("coverage item %q references evidence assigned to plan item %q", planItemID, entry.PlanItemID)
-			}
 			if entry.Error == "" {
 				hasSuccess = true
 			} else {
@@ -155,10 +156,16 @@ func validateEvidenceLanguage(diagnosis *schema.Diagnosis, entries []trace.Entry
 		strings.Contains(traceText, "health=none") || strings.Contains(traceText, `"health":""`)
 	if healthUnverified {
 		if claim := unsupportedClaim(claims, []string{
-			"系统正常", "系统运行正常", "核心组件运行正常", "所有核心组件",
+			"系统正常", "系统运行正常", "核心组件运行正常", "所有核心组件", "所有核心依赖",
 			"组件状态均正常", "服务健康", "应用健康正常", "无需进一步排查服务可用性",
+			"非服务故障",
 		}); claim != "" {
 			return fmt.Errorf("unverified health evidence does not support claim %q; scope each status and mark application/container health unverified", claim)
+		}
+	}
+	if strings.Contains(traceText, `"checked_tables"`) {
+		if claim := unsupportedClaim(claims, []string{"表结构正常", "表结构完整", "数据结构正常"}); claim != "" {
+			return fmt.Errorf("table existence evidence does not support claim %q; report only SQL connectivity and whether the requested table exists", claim)
 		}
 	}
 	if strings.Contains(traceText, "connection refused") {

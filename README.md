@@ -78,7 +78,7 @@ agent:
   max_steps: 12
   llm_timeout: 30s
   tool_timeout: 5s
-  skill_path: ../skills/sre-diagnosis/SKILL.md
+  skill_path: skills/sre-diagnosis/SKILL.md
 
 policy:
   tool_allowlist:
@@ -103,7 +103,7 @@ targets:
 
 完整示例见 [configs/config.example.yaml](configs/config.example.yaml)。LLM 环境变量见 [.env.example](.env.example)。
 
-诊断规则位于仓库内的 [skills/sre-diagnosis/SKILL.md](skills/sre-diagnosis/SKILL.md)，不再写在 Go 源码中。`agent.skill_path` 支持绝对路径或相对路径；程序先按当前工作目录解析，找不到时再相对配置文件目录解析。使用真实 LLM 启动诊断时，程序只读取一次该文件、去掉 YAML frontmatter，并把正文作为 system message 发送给模型；文件不存在、为空或超过 128 KiB 会阻止启动。`agents/openai.yaml` 仅提供 Codex/技能目录的元数据，不参与 Go 运行时加载。mock 场景不调用模型，因此不需要加载 skill。
+诊断规则位于仓库内的 [skills/sre-diagnosis/SKILL.md](skills/sre-diagnosis/SKILL.md)，不再写在 Go 源码中。`agent.skill_path` 支持绝对路径或相对于当前工作目录的路径。使用真实 LLM 启动诊断时，程序只读取一次该文件、去掉 YAML frontmatter，并把正文作为 system message 发送给模型；文件不存在、为空或超过 128 KiB 会阻止启动。mock 场景不调用模型，因此不需要加载 skill。
 
 支持的 provider：
 

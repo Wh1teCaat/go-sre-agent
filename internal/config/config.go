@@ -137,12 +137,18 @@ func Load(path string) (Config, error) {
 		if err != nil {
 			return Config{}, fmt.Errorf("parse agent.llm_timeout: %w", err)
 		}
+		if duration <= 0 {
+			return Config{}, fmt.Errorf("agent.llm_timeout must be positive")
+		}
 		cfg.Agent.LLMTimeout = duration
 	}
 	if raw.Agent.ToolTimeout != "" {
 		duration, err := time.ParseDuration(raw.Agent.ToolTimeout)
 		if err != nil {
 			return Config{}, fmt.Errorf("parse agent.tool_timeout: %w", err)
+		}
+		if duration <= 0 {
+			return Config{}, fmt.Errorf("agent.tool_timeout must be positive")
 		}
 		cfg.Agent.ToolTimeout = duration
 	}

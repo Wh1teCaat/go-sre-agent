@@ -48,8 +48,8 @@ func TestAnthropicChatClientMapsMessagesAndParsesText(t *testing.T) {
 	if len(gotRequest.Messages) != 1 || gotRequest.Messages[0].Role != "user" {
 		t.Fatalf("messages = %#v", gotRequest.Messages)
 	}
-	if response.Content != `{"type":"final"}` {
-		t.Fatalf("content = %q", response.Content)
+	if response != `{"type":"final"}` {
+		t.Fatalf("content = %q", response)
 	}
 }
 

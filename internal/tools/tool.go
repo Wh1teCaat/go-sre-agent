@@ -26,8 +26,6 @@ type ToolSpec struct {
 // Tool 是 runtime 可执行的只读诊断能力。
 // Schema 同时发给 LLM 做参数提示，并交给 policy 做执行前校验。
 type Tool interface {
-	Name() string
-	Description() string
-	Schema() ToolSchema
+	Spec() ToolSpec
 	Run(ctx context.Context, args json.RawMessage) (schema.Observation, error)
 }

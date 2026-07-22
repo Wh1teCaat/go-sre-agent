@@ -13,6 +13,7 @@ import (
 )
 
 // scenarioActions 返回内置 mock 场景的结构化 action 序列，便于无模型环境下测试链路。
+// 参数: mockScenario 为场景名，cfg 提供目标参数；返回: action 序列或未知场景错误。
 func scenarioActions(mockScenario string, cfg diagnoseOptions) ([]schema.Action, error) {
 	switch mockScenario {
 	case "skeleton":
@@ -130,6 +131,7 @@ func scenarioActions(mockScenario string, cfg diagnoseOptions) ([]schema.Action,
 }
 
 // rawArgs 把测试或 mock 场景中的强类型参数转换成工具 action 使用的 JSON 参数。
+// 参数: value 为可 JSON 编码参数；返回: JSON 原始字节，编码失败时 panic。
 func rawArgs(value any) json.RawMessage {
 	data, err := json.Marshal(value)
 	if err != nil {

@@ -17,12 +17,8 @@ func NewValidator(config Config) *Validator {
 	for _, tool := range config.ToolAllowlist {
 		allowed[tool] = struct{}{}
 	}
-	schemas := make(map[string]tools.ToolSchema, len(config.ToolSchemas))
-	for name, schema := range config.ToolSchemas {
-		schemas[name] = schema
-	}
 	return &Validator{
 		allowed: allowed,
-		schemas: schemas,
+		schemas: config.ToolSchemas,
 	}
 }

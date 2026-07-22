@@ -11,7 +11,7 @@
 - `internal/agent`: runtime loop, state, prompt boundary, execution boundary.
 - `internal/llm`: provider interface, action planner, generic chat types/config, mock provider, OpenAI-compatible/Ollama client, and Anthropic Messages client.
 - `internal/tools`: tool interface, registry, tool specs, and concrete tool packages.
-- `internal/policy`: action validation, tool schema arg validation, max-step policy, allowlist and timeout settings.
+- `internal/policy`: action、计划、证据、工具白名单和参数 schema 校验。
 - `internal/trace`: per-step execution trace storage.
 - `internal/report`: markdown report generation from diagnosis and trace evidence.
 - `internal/schema`: structured action, observation, evidence, and diagnosis types.

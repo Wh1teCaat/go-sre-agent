@@ -42,16 +42,10 @@ type Store struct {
 }
 
 func NewStore(dir string) *Store {
-	if strings.TrimSpace(dir) == "" {
-		dir = ".runs"
-	}
 	return &Store{dir: dir}
 }
 
 func NewRunID(now time.Time) string {
-	if now.IsZero() {
-		now = time.Now()
-	}
 	now = now.UTC()
 	return fmt.Sprintf("run_%s_%09d_%s", now.Format("20060102_150405"), now.Nanosecond(), randomRunIDSuffix())
 }

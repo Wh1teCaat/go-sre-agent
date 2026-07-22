@@ -5,7 +5,16 @@ import (
 	"strings"
 
 	"github.com/y2/go-sre-agent/internal/schema"
+	"github.com/y2/go-sre-agent/internal/tools"
+	"github.com/y2/go-sre-agent/internal/trace"
 )
+
+type Input struct {
+	Goal      string
+	Diagnosis schema.Diagnosis
+	Plan      schema.Plan
+	Trace     []trace.Entry
+}
 
 // Markdown 根据最终诊断和内部 trace 生成 Markdown 报告。
 // 报告里的证据会重新回查 trace，避免直接采信模型声明的不存在证据。
@@ -89,7 +98,7 @@ func Markdown(input Input) string {
 		}
 	}
 
-	return b.String()
+	return tools.RedactSensitive(b.String())
 }
 
 func planItemGoal(plan schema.Plan, id string) string {

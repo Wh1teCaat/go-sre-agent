@@ -102,3 +102,14 @@ func TestMarkdownShowsPlanCoverage(t *testing.T) {
 		t.Fatalf("markdown missing coverage item:\n%s", markdown)
 	}
 }
+
+func TestMarkdownRedactsSensitiveContent(t *testing.T) {
+	markdown := Markdown(Input{
+		Goal:      "诊断 password=secret",
+		Diagnosis: schema.Diagnosis{Summary: "token=secret"},
+	})
+
+	if strings.Contains(markdown, "secret") || !strings.Contains(markdown, "[REDACTED]") {
+		t.Fatalf("markdown was not redacted:\n%s", markdown)
+	}
+}

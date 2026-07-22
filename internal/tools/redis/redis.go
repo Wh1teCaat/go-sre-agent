@@ -20,28 +20,11 @@ type Args struct {
 	Password string `json:"password,omitempty"`
 }
 
-type Tool struct {
-	dialer *net.Dialer
-}
+type Tool struct{}
 
-func New(dialer *net.Dialer) *Tool {
-	if dialer == nil {
-		dialer = &net.Dialer{}
-	}
-	return &Tool{dialer: dialer}
-}
+func New() *Tool { return &Tool{} }
 
-func (t *Tool) Name() string {
-	return Name
-}
-
-func (t *Tool) Description() string {
-	return Spec().Description
-}
-
-func (t *Tool) Schema() tools.ToolSchema {
-	return Spec().Schema
-}
+func (t *Tool) Spec() tools.ToolSpec { return Spec() }
 
 func (t *Tool) Run(ctx context.Context, rawArgs json.RawMessage) (schema.Observation, error) {
 	var args Args
@@ -54,7 +37,7 @@ func (t *Tool) Run(ctx context.Context, rawArgs json.RawMessage) (schema.Observa
 	}
 
 	startedAt := time.Now()
-	conn, err := t.dialer.DialContext(ctx, "tcp", args.Addr)
+	conn, err := new(net.Dialer).DialContext(ctx, "tcp", args.Addr)
 	if err != nil {
 		return schema.Observation{}, fmt.Errorf("connect redis: %w", err)
 	}

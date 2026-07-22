@@ -28,31 +28,14 @@ type Args struct {
 }
 
 type Tool struct {
-	dialer       *net.Dialer
 	allowedHosts tools.AllowedHosts
 }
 
-func NewWithAllowedHosts(dialer *net.Dialer, allowedHosts []string) *Tool {
-	if dialer == nil {
-		dialer = &net.Dialer{}
-	}
-	return &Tool{
-		dialer:       dialer,
-		allowedHosts: tools.NewAllowedHosts(allowedHosts),
-	}
+func NewWithAllowedHosts(allowedHosts []string) *Tool {
+	return &Tool{allowedHosts: tools.NewAllowedHosts(allowedHosts)}
 }
 
-func (t *Tool) Name() string {
-	return Name
-}
-
-func (t *Tool) Description() string {
-	return Spec().Description
-}
-
-func (t *Tool) Schema() tools.ToolSchema {
-	return Spec().Schema
-}
+func (t *Tool) Spec() tools.ToolSpec { return Spec() }
 
 func (t *Tool) Run(ctx context.Context, rawArgs json.RawMessage) (schema.Observation, error) {
 	var args Args
@@ -86,7 +69,7 @@ func (t *Tool) Run(ctx context.Context, rawArgs json.RawMessage) (schema.Observa
 	}
 
 	startedAt := time.Now()
-	conn, err := t.dial(ctx, parsed, addr)
+	conn, err := dial(ctx, parsed, addr)
 	if err != nil {
 		return schema.Observation{}, fmt.Errorf("connect websocket: %w", err)
 	}
@@ -111,7 +94,7 @@ func (t *Tool) Run(ctx context.Context, rawArgs json.RawMessage) (schema.Observa
 	if response.StatusCode != http.StatusSwitchingProtocols {
 		// 非 101 也不是工具错误：HTTP 状态码和响应片段正是排查握手失败的证据。
 		body, _ := io.ReadAll(io.LimitReader(response.Body, 512))
-		bodySnippet = string(body)
+		bodySnippet = tools.RedactSensitive(string(body))
 		return schema.Observation{
 			Tool:    Name,
 			Summary: fmt.Sprintf("WebSocket %s handshake returned %d in %dms", args.URL, response.StatusCode, latencyMS),
@@ -151,10 +134,10 @@ func (t *Tool) Run(ctx context.Context, rawArgs json.RawMessage) (schema.Observa
 	}, nil
 }
 
-func (t *Tool) dial(ctx context.Context, parsed *url.URL, addr string) (net.Conn, error) {
+func dial(ctx context.Context, parsed *url.URL, addr string) (net.Conn, error) {
 	if parsed.Scheme == "wss" {
 		tlsDialer := &tls.Dialer{
-			NetDialer: t.dialer,
+			NetDialer: new(net.Dialer),
 			Config: &tls.Config{
 				ServerName: parsed.Hostname(),
 				MinVersion: tls.VersionTLS12,
@@ -162,7 +145,7 @@ func (t *Tool) dial(ctx context.Context, parsed *url.URL, addr string) (net.Conn
 		}
 		return tlsDialer.DialContext(ctx, "tcp", addr)
 	}
-	return t.dialer.DialContext(ctx, "tcp", addr)
+	return new(net.Dialer).DialContext(ctx, "tcp", addr)
 }
 
 func websocketAddr(parsed *url.URL) string {
@@ -203,6 +186,12 @@ func writeHandshake(conn net.Conn, parsed *url.URL, key string, headers map[stri
 		if isProtectedHeader(name) {
 			// 保护协议必需头，避免调用方覆盖 Host/Upgrade/Key 导致检查语义失真。
 			continue
+		}
+		if strings.ContainsAny(name, "\r\n:") || strings.TrimSpace(name) == "" {
+			return fmt.Errorf("invalid websocket header name")
+		}
+		if strings.ContainsAny(value, "\r\n") {
+			return fmt.Errorf("invalid websocket header value for %q", name)
 		}
 		fmt.Fprintf(&b, "%s: %s\r\n", name, value)
 	}

@@ -12,16 +12,10 @@ type fakeTool struct {
 	name string
 }
 
-func (f fakeTool) Name() string { return f.name }
-
-func (f fakeTool) Description() string { return "fake tool" }
-
-func (f fakeTool) Schema() ToolSchema {
-	return ToolSchema{
-		Properties: map[string]ArgSpec{
-			"target": {Type: "string", Required: true},
-		},
-	}
+func (f fakeTool) Spec() ToolSpec {
+	return ToolSpec{Name: f.name, Description: "fake tool", Schema: ToolSchema{
+		Properties: map[string]ArgSpec{"target": {Type: "string", Required: true}},
+	}}
 }
 
 func (f fakeTool) Run(context.Context, json.RawMessage) (schema.Observation, error) {
@@ -39,8 +33,8 @@ func TestRegistryRegistersAndFindsTool(t *testing.T) {
 	if !ok {
 		t.Fatal("expected registered tool to be found")
 	}
-	if tool.Name() != "http_check" {
-		t.Fatalf("tool name = %q, want %q", tool.Name(), "http_check")
+	if tool.Spec().Name != "http_check" {
+		t.Fatalf("tool name = %q, want %q", tool.Spec().Name, "http_check")
 	}
 }
 

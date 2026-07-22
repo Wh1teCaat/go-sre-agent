@@ -8,12 +8,14 @@ import (
 	"github.com/y2/go-sre-agent/internal/llm"
 )
 
+// pingLLM 发送固定消息验证已配置 LLM 的最小连通性。
+// 参数: ctx 控制请求取消；返回: 模型原始响应或调用错误。
 func pingLLM(ctx context.Context) (string, error) {
 	return chatWithLLM(ctx, "这是 LLM 连通性测试。请只回复 pong。")
 }
 
-// chatWithLLM 只验证底层 ChatClient 连通性，直接返回模型原始文本。
-// 诊断链路仍然通过 ActionPlanner 把模型输出解析成结构化 action。
+// chatWithLLM 通过底层 ChatClient 发送文本，不进入诊断 runtime。
+// 参数: ctx 控制请求取消，message 为用户文本；返回: 模型原始响应或调用错误。
 func chatWithLLM(ctx context.Context, message string) (string, error) {
 	message = strings.TrimSpace(message)
 	if message == "" {
@@ -29,7 +31,7 @@ func chatWithLLM(ctx context.Context, message string) (string, error) {
 		return "", err
 	}
 
-	response, err := client.Chat(ctx, llm.ChatRequest{
+	return client.Chat(ctx, llm.ChatRequest{
 		Model: llmConfig.Model,
 		Messages: []llm.Message{
 			{
@@ -40,8 +42,4 @@ func chatWithLLM(ctx context.Context, message string) (string, error) {
 		OutputMode:  llm.OutputText,
 		Temperature: 0.2,
 	})
-	if err != nil {
-		return "", err
-	}
-	return response.Content, nil
 }

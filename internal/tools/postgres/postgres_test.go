@@ -34,7 +34,7 @@ func TestPostgresPingSendsStartupAndReturnsServerResponse(t *testing.T) {
 		_, _ = conn.Write([]byte{'R', 0, 0, 0, 8, 0, 0, 0, 0})
 	})
 
-	tool := NewPing(nil)
+	tool := NewPing()
 	observation, err := tool.Run(context.Background(), mustPostgresArgs(t, PingArgs{
 		DSN: "postgres://app:secret@" + addr + "/chat_proj?sslmode=disable",
 	}))
@@ -54,7 +54,7 @@ func TestPostgresPingSendsStartupAndReturnsServerResponse(t *testing.T) {
 }
 
 func TestPostgresPingRejectsMissingDSN(t *testing.T) {
-	tool := NewPing(nil)
+	tool := NewPing()
 
 	_, err := tool.Run(context.Background(), mustPostgresArgs(t, PingArgs{}))
 	if err == nil {

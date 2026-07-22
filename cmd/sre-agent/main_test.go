@@ -100,7 +100,7 @@ targets:
 	if err != nil {
 		t.Fatalf("start diagnosis: %v", err)
 	}
-	if err := saveDiagnosisRun(result); err != nil {
+	if err := saveDiagnosisResult(result, nil); err != nil {
 		t.Fatalf("save diagnosis: %v", err)
 	}
 	if result.State.RunID == "" {
@@ -143,7 +143,7 @@ paths:
 	if err != nil {
 		t.Fatalf("start diagnosis: %v", err)
 	}
-	if err := saveDiagnosisRun(result); err != nil {
+	if err := saveDiagnosisResult(result, nil); err != nil {
 		t.Fatalf("save diagnosis: %v", err)
 	}
 
@@ -319,6 +319,7 @@ func TestResumeDiagnosisRunContinuesPersistedRunWithExistingTrace(t *testing.T) 
 	result, err := resumeDiagnosisRun(context.Background(), resumeOptions{
 		RunID:       "run_failed",
 		RunDir:      runDir,
+		ConfigPath:  writeTestConfig(t, "agent:\n  skill_path: ../../skills/sre-diagnosis/SKILL.md\n"),
 		MaxSteps:    2,
 		ToolTimeout: time.Second,
 	}, "")
@@ -344,7 +345,7 @@ func TestResumeDiagnosisRunContinuesPersistedRunWithExistingTrace(t *testing.T) 
 	if !strings.Contains(result.Markdown, "resume completed") {
 		t.Fatalf("markdown missing final summary:\n%s", result.Markdown)
 	}
-	if err := saveDiagnosisRun(result); err != nil {
+	if err := saveDiagnosisResult(result, nil); err != nil {
 		t.Fatalf("save resumed run: %v", err)
 	}
 
@@ -379,6 +380,7 @@ func TestResumeDiagnosisRunRejectsMaxStepsAlreadyReached(t *testing.T) {
 	_, err := resumeDiagnosisRun(context.Background(), resumeOptions{
 		RunID:       "run_failed",
 		RunDir:      runDir,
+		ConfigPath:  writeTestConfig(t, ""),
 		MaxSteps:    2,
 		ToolTimeout: time.Second,
 	}, "skeleton")
@@ -390,14 +392,83 @@ func TestResumeDiagnosisRunRejectsMaxStepsAlreadyReached(t *testing.T) {
 	}
 }
 
-func TestRunErrorMessageIncludesRunIDWhenStateWasCreated(t *testing.T) {
-	message := runErrorMessage(diagnoseResult{
-		State: runstore.State{RunID: "run_failed"},
+func TestResumeDiagnosisRunRejectsMissingCreatedAt(t *testing.T) {
+	runDir := t.TempDir()
+	if err := runstore.NewStore(runDir).Save(runstore.State{
+		RunID: "run_failed",
+		Goal:  "检查后端是否存活",
+	}); err != nil {
+		t.Fatalf("save run: %v", err)
+	}
+
+	_, err := resumeDiagnosisRun(context.Background(), resumeOptions{RunID: "run_failed", RunDir: runDir}, "")
+	if err == nil || !strings.Contains(err.Error(), "missing created_at") {
+		t.Fatalf("error = %v, want missing created_at error", err)
+	}
+}
+
+func TestResumeDiagnosisRunRejectsMissingGoal(t *testing.T) {
+	runDir := t.TempDir()
+	if err := runstore.NewStore(runDir).Save(runstore.State{
+		RunID:     "run_failed",
+		CreatedAt: time.Unix(10, 0).UTC(),
+	}); err != nil {
+		t.Fatalf("save run: %v", err)
+	}
+
+	_, err := resumeDiagnosisRun(context.Background(), resumeOptions{RunID: "run_failed", RunDir: runDir}, "")
+	if err == nil || !strings.Contains(err.Error(), "missing goal") {
+		t.Fatalf("error = %v, want missing goal error", err)
+	}
+}
+
+func TestResumeDiagnosisRunRejectsInvalidStatus(t *testing.T) {
+	runDir := t.TempDir()
+	if err := runstore.NewStore(runDir).Save(runstore.State{
+		RunID:     "run_invalid",
+		Goal:      "检查后端是否存活",
+		CreatedAt: time.Unix(10, 0).UTC(),
+	}); err != nil {
+		t.Fatalf("save run: %v", err)
+	}
+
+	_, err := resumeDiagnosisRun(context.Background(), resumeOptions{RunID: "run_invalid", RunDir: runDir}, "")
+	if err == nil || !strings.Contains(err.Error(), "unsupported status") {
+		t.Fatalf("error = %v, want unsupported status error", err)
+	}
+}
+
+func TestResumeDiagnosisRunRejectsMismatchedRunID(t *testing.T) {
+	runDir := t.TempDir()
+	state := runstore.State{
+		RunID:     "other_run",
+		Goal:      "检查后端是否存活",
+		Status:    runstore.StatusFailed,
+		CreatedAt: time.Unix(10, 0).UTC(),
+	}
+	data, err := json.Marshal(state)
+	if err != nil {
+		t.Fatalf("encode run: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(runDir, "expected_run.json"), data, 0o600); err != nil {
+		t.Fatalf("write run: %v", err)
+	}
+
+	_, err = resumeDiagnosisRun(context.Background(), resumeOptions{RunID: "expected_run", RunDir: runDir}, "")
+	if err == nil || !strings.Contains(err.Error(), "mismatched run_id") {
+		t.Fatalf("error = %v, want mismatched run id error", err)
+	}
+}
+
+func TestSaveDiagnosisResultIncludesRunIDWhenStateWasCreated(t *testing.T) {
+	err := saveDiagnosisResult(diagnoseResult{
+		State:  runstore.State{RunID: "run_failed"},
+		RunDir: t.TempDir(),
 	}, fmt.Errorf("max steps reached"))
 
 	for _, want := range []string{"run_id: run_failed", "max steps reached"} {
-		if !strings.Contains(message, want) {
-			t.Fatalf("message missing %q:\n%s", want, message)
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("error missing %q:\n%s", want, err)
 		}
 	}
 }
@@ -501,6 +572,8 @@ func TestRunDiagnoseUsesOpenAICompatibleChatClientFromEnvWhenNoMockScenario(t *t
 	defer server.Close()
 	t.Setenv("OPENAI_BASE_URL", server.URL)
 	configPath := writeTestConfig(t, `
+agent:
+  skill_path: ../../skills/sre-diagnosis/SKILL.md
 targets:
   backend_base_url: "http://chat-proj.local:8080"
   log_file: "/var/log/chat_proj/app.log"
@@ -642,6 +715,8 @@ func TestRunDiagnoseRealProviderCanDriveToolLoop(t *testing.T) {
 		t.Fatalf("parse backend URL: %v", err)
 	}
 	configPath := writeTestConfig(t, fmt.Sprintf(`
+agent:
+  skill_path: ../../skills/sre-diagnosis/SKILL.md
 policy:
   allowed_hosts:
     - %q
@@ -892,7 +967,7 @@ targets:
 	}
 }
 
-func TestResolveDiagnosisConfigAppliesOptionOverrides(t *testing.T) {
+func TestResolveDiagnosisConfigAppliesCLIOverridesOnly(t *testing.T) {
 	configPath := writeTestConfig(t, `
 agent:
   max_steps: 11
@@ -916,53 +991,28 @@ targets:
 `)
 
 	cfg, err := resolveDiagnosisConfig(diagnoseOptions{
-		Goal:              "diagnose",
-		ConfigPath:        configPath,
-		BackendBaseURL:    "http://override:8080",
-		LogFile:           "/override/logs/app.log",
-		AllowedLogDirs:    []string{"/override/logs"},
-		AllowedHosts:      []string{"override.local"},
-		AllowedContainers: []string{"override-backend"},
-		PostgresDSN:       "postgres://override:secret@db:5432/app?sslmode=disable",
-		RedisAddr:         "override-redis:6379",
-		WebSocketURL:      "ws://override/ws",
-		MaxSteps:          3,
-		LLMTimeout:        1500 * time.Millisecond,
-		ToolTimeout:       2 * time.Second,
-		ToolAllowlist:     []string{"log_read"},
-		RunDir:            "/override/runs",
-		ReportDir:         "/override/reports",
+		Goal:           "diagnose",
+		ConfigPath:     configPath,
+		BackendBaseURL: "http://override:8080",
+		LogFile:        "/override/logs/app.log",
+		MaxSteps:       3,
+		LLMTimeout:     1500 * time.Millisecond,
+		ToolTimeout:    2 * time.Second,
+		RunDir:         "/override/runs",
+		ReportDir:      "/override/reports",
 	})
 	if err != nil {
 		t.Fatalf("resolve config: %v", err)
 	}
 
-	if cfg.BackendBaseURL != "http://override:8080" {
-		t.Fatalf("backend base URL = %q, want override", cfg.BackendBaseURL)
-	}
-	if cfg.LogFile != "/override/logs/app.log" || len(cfg.AllowedLogDirs) != 1 || cfg.AllowedLogDirs[0] != "/override/logs" {
-		t.Fatalf("log config = %q/%#v, want override", cfg.LogFile, cfg.AllowedLogDirs)
-	}
-	if len(cfg.AllowedHosts) != 1 || cfg.AllowedHosts[0] != "override.local" {
-		t.Fatalf("allowed hosts = %#v, want override", cfg.AllowedHosts)
-	}
-	if len(cfg.AllowedContainers) != 1 || cfg.AllowedContainers[0] != "override-backend" {
-		t.Fatalf("allowed containers = %#v, want override", cfg.AllowedContainers)
-	}
-	if cfg.PostgresDSN != "postgres://override:secret@db:5432/app?sslmode=disable" {
-		t.Fatalf("postgres dsn = %q, want override", cfg.PostgresDSN)
-	}
-	if cfg.RedisAddr != "override-redis:6379" || cfg.WebSocketURL != "ws://override/ws" {
-		t.Fatalf("dependency targets = %q/%q, want override", cfg.RedisAddr, cfg.WebSocketURL)
+	if cfg.BackendBaseURL != "http://configured:8080" || cfg.LogFile != "/configured/logs/app.log" {
+		t.Fatalf("non-CLI targets were overridden: %q/%q", cfg.BackendBaseURL, cfg.LogFile)
 	}
 	if cfg.MaxSteps != 3 || cfg.LLMTimeout != 1500*time.Millisecond || cfg.ToolTimeout != 2*time.Second {
 		t.Fatalf("agent config = %d/%s/%s, want override", cfg.MaxSteps, cfg.LLMTimeout, cfg.ToolTimeout)
 	}
-	if len(cfg.ToolAllowlist) != 1 || cfg.ToolAllowlist[0] != "log_read" {
-		t.Fatalf("tool allowlist = %#v, want override", cfg.ToolAllowlist)
-	}
-	if cfg.RunDir != "/override/runs" || cfg.ReportDir != "/override/reports" {
-		t.Fatalf("paths = %q/%q, want override", cfg.RunDir, cfg.ReportDir)
+	if cfg.RunDir != "/override/runs" || cfg.ReportDir != "/configured/reports" {
+		t.Fatalf("paths = %q/%q, want CLI run dir and configured report dir", cfg.RunDir, cfg.ReportDir)
 	}
 }
 
@@ -1008,18 +1058,6 @@ paths:
 	}
 }
 
-func TestReportOutputPathUsesConfiguredReportDir(t *testing.T) {
-	if got := reportOutputPath("/tmp/report.md", "/tmp/reports", "run_1"); got != "/tmp/report.md" {
-		t.Fatalf("explicit report path = %q, want /tmp/report.md", got)
-	}
-	if got := reportOutputPath("", "/tmp/reports", "run_1"); got != filepath.Join("/tmp/reports", "run_1.md") {
-		t.Fatalf("configured report path = %q, want run-specific path", got)
-	}
-	if got := reportOutputPath("", "", "run_1"); got != "" {
-		t.Fatalf("empty report path = %q, want stdout", got)
-	}
-}
-
 func TestMarkdownOutputWritesReportAndReturnsMarkdown(t *testing.T) {
 	reportDir := t.TempDir()
 	result := diagnoseResult{
@@ -1042,6 +1080,13 @@ func TestMarkdownOutputWritesReportAndReturnsMarkdown(t *testing.T) {
 	}
 	if string(data) != result.Markdown {
 		t.Fatalf("written report = %q, want markdown", data)
+	}
+	info, err := os.Stat(filepath.Join(reportDir, "run_1.md"))
+	if err != nil {
+		t.Fatalf("stat report: %v", err)
+	}
+	if got := info.Mode().Perm(); got != 0o600 {
+		t.Fatalf("report mode = %o, want 600", got)
 	}
 }
 

@@ -25,17 +25,13 @@ type Args struct {
 }
 
 type Tool struct {
-	client       *http.Client
 	maxBodyBytes int
 	allowedHosts tools.AllowedHosts
 	allowedPOST  map[string]struct{}
 }
 
 // NewWithPolicy 额外声明允许 POST 的精确 URL；其他 URL 只能使用 GET/HEAD。
-func NewWithPolicy(client *http.Client, maxBodyBytes int, allowedHosts []string, allowedPOSTURLs []string) *Tool {
-	if client == nil {
-		client = http.DefaultClient
-	}
+func NewWithPolicy(maxBodyBytes int, allowedHosts []string, allowedPOSTURLs []string) *Tool {
 	if maxBodyBytes <= 0 {
 		maxBodyBytes = 512
 	}
@@ -46,24 +42,13 @@ func NewWithPolicy(client *http.Client, maxBodyBytes int, allowedHosts []string,
 		}
 	}
 	return &Tool{
-		client:       client,
 		maxBodyBytes: maxBodyBytes,
 		allowedHosts: tools.NewAllowedHosts(allowedHosts),
 		allowedPOST:  allowedPOST,
 	}
 }
 
-func (t *Tool) Name() string {
-	return Name
-}
-
-func (t *Tool) Description() string {
-	return Spec().Description
-}
-
-func (t *Tool) Schema() tools.ToolSchema {
-	return Spec().Schema
-}
+func (t *Tool) Spec() tools.ToolSpec { return Spec() }
 
 func (t *Tool) Run(ctx context.Context, rawArgs json.RawMessage) (schema.Observation, error) {
 	var args Args
@@ -174,7 +159,7 @@ func normalizeURL(rawURL string) (string, error) {
 // requestClient 为本次请求复制 client，并对每个重定向目标重复执行 scheme/host 策略。
 // 直接修改共享 client.CheckRedirect 会让并发诊断相互影响。
 func (t *Tool) requestClient() *http.Client {
-	client := *t.client
+	client := *http.DefaultClient
 	previous := client.CheckRedirect
 	client.CheckRedirect = func(request *http.Request, via []*http.Request) error {
 		if request.URL.Scheme != "http" && request.URL.Scheme != "https" {

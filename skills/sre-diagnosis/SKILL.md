@@ -25,6 +25,8 @@ Return `{"plan":null}` when the existing plan still fits the observations.
 When there is no existing plan, a planning request must return a non-empty
 plan. Plan statuses are only `pending`, `done`, `blocked`, or `insufficient`.
 Keep plan item IDs stable and describe evidence questions, not a fixed script.
+Every plan item `goal` must be a descriptive Chinese phrase, never a copy of
+its identifier.
 Use `pending` before an observation exists, `done` only with a successful
 observation, `blocked` with a failed tool observation, and `insufficient` when
 an attempted observation exists but cannot answer the plan item. Never define
@@ -46,7 +48,10 @@ return a `tool_call` or `final` action.
 With an active plan, final output must include coverage for every plan item;
 without an active plan, omit `final.coverage`. Every coverage item, including
 `insufficient`, needs evidence that is also present in `final.evidence`. For
-example, a failed step 1 and successful step 2 must be represented as:
+comparison or synthesis plan items, reuse the relevant evidence from the
+underlying check items; one trace observation may support multiple coverage
+items. For example, a failed step 1 and successful step 2 must be represented
+as:
 
 ```json
 {"type":"final","thought_summary":"证据已覆盖计划","final":{"summary":"分别说明失败与成功范围","evidence":[{"step":1,"tool":"http_check","summary":"连接失败"},{"step":2,"tool":"redis_ping","summary":"返回 PONG"}],"coverage":[{"plan_item_id":"http_health_check","status":"blocked","evidence":[{"step":1,"tool":"http_check","summary":"连接失败"}]},{"plan_item_id":"redis_connectivity_check","status":"done","evidence":[{"step":2,"tool":"redis_ping","summary":"返回 PONG"}]}]}}
@@ -88,6 +93,9 @@ example, a failed step 1 and successful step 2 must be represented as:
   user explicitly requires an exact format.
 - Keep historical requests and newly reproduced requests separate. Never use
   one request's status, ID, latency, or log line as another request's evidence.
+- Historical log evidence does not provide a current client observation unless
+  the goal supplies one. Explicitly mark both client status and client latency
+  as “未观测”; mentioning only one is incomplete.
 - Keep client-observed latency separate from server-log latency. If a value was
   not observed, say so.
 - The same HTTP status, business code, or processing stage can establish a
@@ -102,7 +110,10 @@ example, a failed step 1 and successful step 2 must be represented as:
   relevant contract or direct evidence for that broader claim.
 - A `postgres_check` authentication failure proves only that this diagnostic
   DSN could not complete SQL checks. It does not prove that the application
-  itself cannot connect. A present `users` table does not prove an email exists.
+  itself cannot connect. A successful check proves only SQL connectivity and
+  existence of the requested tables; it does not verify table schema, structure,
+  data integrity, or a specific email. A present `users` table does not prove an
+  email exists.
 - `/health` returning 401 proves reachability and authentication interception,
   not health. A WebSocket 401 means the upgrade was rejected by authentication;
   do not call the handshake successful. `health=none` means no health check is

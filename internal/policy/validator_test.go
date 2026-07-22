@@ -90,6 +90,16 @@ func TestValidatorRejectsInvalidPlanUpdate(t *testing.T) {
 	}
 }
 
+func TestValidatorRejectsPlanGoalThatRepeatsID(t *testing.T) {
+	err := NewValidator(Config{}).ValidatePlan(schema.Plan{Items: []schema.PlanItem{{
+		ID:   "historical_request_analysis",
+		Goal: "historical_request_analysis",
+	}}})
+	if err == nil || !strings.Contains(err.Error(), "repeating its id") {
+		t.Fatalf("error = %v, want repeated goal error", err)
+	}
+}
+
 func TestValidatorRejectsEmptyPlanUpdate(t *testing.T) {
 	validator := NewValidator(Config{})
 	err := validator.ValidatePlan(schema.Plan{})
@@ -271,13 +281,17 @@ func TestValidatorRejectsClaimsBeyondGenericAuthAndHealthEvidence(t *testing.T) 
 		{Step: 2, ToolName: "http_check", Result: schema.Observation{Summary: "GET http://localhost:8080/health returned 401", Data: map[string]any{"status": 401}}},
 		{Step: 3, ToolName: "docker_inspect", Result: schema.Observation{Summary: "running=true exit_code=0 health=none"}},
 		{Step: 4, ToolName: "http_check", Result: schema.Observation{Error: "dial tcp 127.0.0.1:65534: connect: connection refused"}},
+		{Step: 5, ToolName: "postgres_check", Result: schema.Observation{Summary: "tables exist: users", Data: map[string]any{"checked_tables": []string{"users"}}}},
 	}
 
 	for name, summary := range map[string]string{
-		"credential root cause": "两次请求根因表现一致，均为密码校验失败。",
-		"aggregate health":      "所有核心组件运行正常，系统正常。",
-		"transport cause":       "连接被拒绝，证明该端口无服务监听或网络不可达。",
-		"transport speculation": "连接被拒绝，通常意味着无进程监听或防火墙拦截。",
+		"credential root cause":       "两次请求根因表现一致，均为密码校验失败。",
+		"aggregate component health":  "所有核心组件运行正常，系统正常。",
+		"aggregate dependency health": "所有核心依赖状态正常。",
+		"auth is not a service fault": "/health 和 WebSocket 的 401 均为认证拦截，非服务故障。",
+		"postgres table structure":    "PostgreSQL 连通且 users 表结构正常。",
+		"transport cause":             "连接被拒绝，证明该端口无服务监听或网络不可达。",
+		"transport speculation":       "连接被拒绝，通常意味着无进程监听或防火墙拦截。",
 	} {
 		t.Run(name, func(t *testing.T) {
 			diagnosis := &schema.Diagnosis{Summary: summary, Evidence: []schema.Evidence{{Step: 1, Tool: "log_read"}}}
@@ -296,22 +310,30 @@ func TestValidatorRejectsClaimsBeyondGenericAuthAndHealthEvidence(t *testing.T) 
 	}
 }
 
-func TestValidatorRejectsCoverageEvidenceFromDifferentPlanItem(t *testing.T) {
+func TestValidatorAllowsEvidenceToCoverComparisonPlanItem(t *testing.T) {
 	validator := NewValidator(Config{})
 	diagnosis := &schema.Diagnosis{
-		Summary:  "PostgreSQL 可达",
-		Evidence: []schema.Evidence{{Step: 1, Tool: "docker_ps"}},
+		Summary: "历史请求与复现现象相同，但根因不能确定。",
+		Evidence: []schema.Evidence{
+			{Step: 1, Tool: "log_read"},
+			{Step: 2, Tool: "http_check"},
+		},
 		Coverage: []schema.CoverageItem{{
-			PlanItemID: "postgres",
+			PlanItemID: "compare_root_cause",
 			Status:     "done",
-			Evidence:   []schema.Evidence{{Step: 1, Tool: "docker_ps"}},
+			Evidence: []schema.Evidence{
+				{Step: 1, Tool: "log_read"},
+				{Step: 2, Tool: "http_check"},
+			},
 		}},
 	}
-	entries := []trace.Entry{{Step: 1, PlanItemID: "redis", ToolName: "docker_ps"}}
+	entries := []trace.Entry{
+		{Step: 1, PlanItemID: "hist_request_trace", ToolName: "log_read"},
+		{Step: 2, PlanItemID: "repro_valid_login", ToolName: "http_check"},
+	}
 
-	err := validator.ValidateFinalEvidence(diagnosis, entries)
-	if err == nil || !strings.Contains(err.Error(), `assigned to plan item "redis"`) {
-		t.Fatalf("error = %v, want plan item mismatch", err)
+	if err := validator.ValidateFinalEvidence(diagnosis, entries); err != nil {
+		t.Fatalf("validate comparison evidence: %v", err)
 	}
 }
 

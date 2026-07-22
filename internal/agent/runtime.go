@@ -35,12 +35,6 @@ type Runtime struct {
 }
 
 func NewRuntime(config RuntimeConfig, provider llm.Provider, registry *tools.Registry, validator *policy.Validator, traceStore *trace.MemoryStore) *Runtime {
-	if config.MaxSteps <= 0 {
-		config.MaxSteps = 12
-	}
-	if config.LLMTimeout <= 0 {
-		config.LLMTimeout = 30 * time.Second
-	}
 	return &Runtime{
 		config:    config,
 		provider:  provider,
@@ -415,8 +409,9 @@ func (r *Runtime) executeTool(ctx context.Context, step int, action schema.Actio
 		if observation.Summary == "" {
 			observation.Summary = fmt.Sprintf("%s failed", action.Tool)
 		}
-		observation.Error = err.Error()
+		observation.Error = tools.RedactSensitive(err.Error())
 	}
+	observation = redactObservation(observation)
 
 	duration := time.Since(startedAt)
 	if duration <= 0 {
@@ -438,7 +433,7 @@ func (r *Runtime) executeTool(ctx context.Context, step int, action schema.Actio
 		StartedAt:      startedAt,
 	}
 	if err != nil {
-		entry.Error = err.Error()
+		entry.Error = tools.RedactSensitive(err.Error())
 	}
 	// trace 是报告证据和下一轮 observation 的共同来源，因此成功/失败都必须落盘到 store。
 	r.trace.Append(entry)
@@ -449,27 +444,21 @@ func (r *Runtime) executeTool(ctx context.Context, step int, action schema.Actio
 	return nil
 }
 
-func redactTraceArgs(args map[string]any) map[string]any {
-	redacted := make(map[string]any, len(args))
-	for key, value := range args {
-		if sensitiveArgName(key) {
-			redacted[key] = "[REDACTED]"
-			continue
+func redactObservation(observation schema.Observation) schema.Observation {
+	observation.Summary = tools.RedactSensitive(observation.Summary)
+	observation.Error = tools.RedactSensitive(observation.Error)
+	if observation.Data != nil {
+		if data, ok := tools.RedactSensitiveValue(observation.Data).(map[string]any); ok {
+			observation.Data = data
 		}
-		if text, ok := value.(string); ok {
-			redacted[key] = tools.RedactSensitive(text)
-			continue
-		}
-		redacted[key] = value
 	}
-	return redacted
+	return observation
 }
 
-func sensitiveArgName(name string) bool {
-	normalized := strings.ReplaceAll(strings.ToLower(name), "-", "_")
-	return normalized == "dsn" ||
-		strings.Contains(normalized, "password") ||
-		strings.Contains(normalized, "token") ||
-		strings.Contains(normalized, "api_key") ||
-		strings.Contains(normalized, "secret")
+func redactTraceArgs(args map[string]any) map[string]any {
+	redacted, ok := tools.RedactSensitiveValue(args).(map[string]any)
+	if !ok {
+		return map[string]any{}
+	}
+	return redacted
 }

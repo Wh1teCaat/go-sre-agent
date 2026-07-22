@@ -151,8 +151,8 @@ func TestOpenAICompatibleChatClientSendsChatRequestAndParsesContent(t *testing.T
 	if gotRequest.ResponseFormat.Type != "json_object" {
 		t.Fatalf("response format = %q, want json_object", gotRequest.ResponseFormat.Type)
 	}
-	if !strings.Contains(response.Content, "LLM provider is wired") {
-		t.Fatalf("response content = %q, want raw model content", response.Content)
+	if !strings.Contains(response, "LLM provider is wired") {
+		t.Fatalf("response content = %q, want raw model content", response)
 	}
 }
 

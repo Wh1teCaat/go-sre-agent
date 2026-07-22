@@ -17,16 +17,12 @@ import (
 
 type runtimeTool struct{}
 
-func (runtimeTool) Name() string { return "http_check" }
-
-func (runtimeTool) Description() string { return "check HTTP endpoint" }
-
-func (runtimeTool) Schema() tools.ToolSchema {
-	return tools.ToolSchema{
+func (runtimeTool) Spec() tools.ToolSpec {
+	return tools.ToolSpec{Name: "http_check", Description: "check HTTP endpoint", Schema: tools.ToolSchema{
 		Properties: map[string]tools.ArgSpec{
 			"url": {Type: "string", Required: true},
 		},
-	}
+	}}
 }
 
 func (runtimeTool) Run(context.Context, json.RawMessage) (schema.Observation, error) {
@@ -323,7 +319,7 @@ func TestRuntimeSetsPlanWithoutConsumingStep(t *testing.T) {
 	}, provider, registry, policy.NewValidator(policy.Config{
 		ToolAllowlist: []string{"http_check"},
 		ToolSchemas: map[string]tools.ToolSchema{
-			"http_check": runtimeTool{}.Schema(),
+			"http_check": runtimeTool{}.Spec().Schema,
 		},
 	}), store)
 
@@ -406,7 +402,7 @@ func TestRuntimeAppliesToolArgOverridesAndRedactsTraceArgs(t *testing.T) {
 		{
 			Type:           schema.ActionTypeToolCall,
 			ThoughtSummary: "check configured postgres",
-			Tool:           tool.Name(),
+			Tool:           tool.Spec().Name,
 			Args:           json.RawMessage(`{}`),
 		},
 		{
@@ -415,7 +411,7 @@ func TestRuntimeAppliesToolArgOverridesAndRedactsTraceArgs(t *testing.T) {
 			Final: &schema.Diagnosis{
 				Summary: "done",
 				Evidence: []schema.Evidence{
-					{Step: 1, Tool: tool.Name(), Summary: "postgres checked"},
+					{Step: 1, Tool: tool.Spec().Name, Summary: "postgres checked"},
 				},
 			},
 		},
@@ -424,13 +420,13 @@ func TestRuntimeAppliesToolArgOverridesAndRedactsTraceArgs(t *testing.T) {
 		MaxSteps:    2,
 		ToolTimeout: time.Second,
 		ToolArgOverrides: map[string]map[string]any{
-			tool.Name(): {
+			tool.Spec().Name: {
 				"dsn": "postgres://app:secret@db.local:5432/chat_proj",
 			},
 		},
 	}, provider, registry, policy.NewValidator(policy.Config{
 		ToolSchemas: map[string]tools.ToolSchema{
-			tool.Name(): tool.Schema(),
+			tool.Spec().Name: tool.Spec().Schema,
 		},
 	}), store)
 
@@ -784,16 +780,12 @@ type dsnRuntimeTool struct {
 	seen *string
 }
 
-func (t dsnRuntimeTool) Name() string { return "postgres_ping" }
-
-func (t dsnRuntimeTool) Description() string { return "check postgres" }
-
-func (t dsnRuntimeTool) Schema() tools.ToolSchema {
-	return tools.ToolSchema{
+func (t dsnRuntimeTool) Spec() tools.ToolSpec {
+	return tools.ToolSpec{Name: "postgres_ping", Description: "check postgres", Schema: tools.ToolSchema{
 		Properties: map[string]tools.ArgSpec{
 			"dsn": {Type: "string", Required: true},
 		},
-	}
+	}}
 }
 
 func (t dsnRuntimeTool) Run(_ context.Context, rawArgs json.RawMessage) (schema.Observation, error) {
@@ -806,19 +798,15 @@ func (t dsnRuntimeTool) Run(_ context.Context, rawArgs json.RawMessage) (schema.
 	if t.seen != nil {
 		*t.seen = args.DSN
 	}
-	return schema.Observation{Tool: t.Name(), Summary: "postgres checked"}, nil
+	return schema.Observation{Tool: t.Spec().Name, Summary: "postgres checked"}, nil
 }
 
-func (failingRuntimeTool) Name() string { return "http_check" }
-
-func (failingRuntimeTool) Description() string { return "check HTTP endpoint" }
-
-func (failingRuntimeTool) Schema() tools.ToolSchema {
-	return tools.ToolSchema{
+func (failingRuntimeTool) Spec() tools.ToolSpec {
+	return tools.ToolSpec{Name: "http_check", Description: "check HTTP endpoint", Schema: tools.ToolSchema{
 		Properties: map[string]tools.ArgSpec{
 			"url": {Type: "string", Required: true},
 		},
-	}
+	}}
 }
 
 func (failingRuntimeTool) Run(context.Context, json.RawMessage) (schema.Observation, error) {

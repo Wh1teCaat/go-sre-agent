@@ -79,15 +79,9 @@ func (p *policy) validate(container string) (string, error) {
 	return container, nil
 }
 
-func (t *PSTool) Name() string                  { return PSName }
-func (t *PSTool) Description() string           { return PSSpec().Description }
-func (t *PSTool) Schema() tools.ToolSchema      { return PSSpec().Schema }
-func (t *InspectTool) Name() string             { return InspectName }
-func (t *InspectTool) Description() string      { return InspectSpec().Description }
-func (t *InspectTool) Schema() tools.ToolSchema { return InspectSpec().Schema }
-func (t *LogsTool) Name() string                { return LogsName }
-func (t *LogsTool) Description() string         { return LogsSpec().Description }
-func (t *LogsTool) Schema() tools.ToolSchema    { return LogsSpec().Schema }
+func (t *PSTool) Spec() tools.ToolSpec      { return PSSpec() }
+func (t *InspectTool) Spec() tools.ToolSpec { return InspectSpec() }
+func (t *LogsTool) Spec() tools.ToolSpec    { return LogsSpec() }
 
 func (t *PSTool) Run(ctx context.Context, _ json.RawMessage) (schema.Observation, error) {
 	if len(t.policy.names) == 0 {

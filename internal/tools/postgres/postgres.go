@@ -23,9 +23,7 @@ type PingArgs struct {
 	DSN string `json:"dsn"`
 }
 
-type PingTool struct {
-	dialer *net.Dialer
-}
+type PingTool struct{}
 
 type endpoint struct {
 	addr     string
@@ -33,24 +31,9 @@ type endpoint struct {
 	database string
 }
 
-func NewPing(dialer *net.Dialer) *PingTool {
-	if dialer == nil {
-		dialer = &net.Dialer{}
-	}
-	return &PingTool{dialer: dialer}
-}
+func NewPing() *PingTool { return &PingTool{} }
 
-func (t *PingTool) Name() string {
-	return PingName
-}
-
-func (t *PingTool) Description() string {
-	return PingSpec().Description
-}
-
-func (t *PingTool) Schema() tools.ToolSchema {
-	return PingSpec().Schema
-}
+func (t *PingTool) Spec() tools.ToolSpec { return PingSpec() }
 
 func (t *PingTool) Run(ctx context.Context, rawArgs json.RawMessage) (schema.Observation, error) {
 	var args PingArgs
@@ -63,7 +46,7 @@ func (t *PingTool) Run(ctx context.Context, rawArgs json.RawMessage) (schema.Obs
 	}
 
 	startedAt := time.Now()
-	conn, err := t.dialer.DialContext(ctx, "tcp", target.addr)
+	conn, err := new(net.Dialer).DialContext(ctx, "tcp", target.addr)
 	if err != nil {
 		return schema.Observation{}, fmt.Errorf("connect postgres: %w", err)
 	}

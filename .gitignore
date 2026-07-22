@@ -45,6 +45,7 @@ coverage.html
 *.prof
 *.pprof
 /sre-agent
+/output
 
 # Editor, OS, and local agent state
 .DS_Store

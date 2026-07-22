@@ -22,35 +22,21 @@ type ActionPlanner struct {
 }
 
 func NewActionPlanner(client ChatClient, config ActionPlannerConfig) *ActionPlanner {
-	if config.Temperature == 0 {
-		config.Temperature = 0.2
-	}
-	return &ActionPlanner{
-		client: client,
-		config: config,
-	}
+	return &ActionPlanner{client: client, config: config}
 }
 
 // Plan 创建或更新检查计划；已有计划无需更新时返回 nil。
 func (p *ActionPlanner) Plan(ctx context.Context, request Request) (*schema.Plan, error) {
 	request.Mode = "plan"
-	contextJSON, err := json.MarshalIndent(request, "", "  ")
-	if err != nil {
-		return nil, fmt.Errorf("encode plan context: %w", err)
-	}
-	response, err := p.client.Chat(ctx, ChatRequest{
-		Model: p.config.Model,
-		Messages: []Message{
-			{Role: RoleSystem, Content: p.config.Skill},
-			{Role: RoleUser, Content: string(contextJSON)},
-		},
-		OutputMode:  OutputJSON,
-		Temperature: p.config.Temperature,
-	})
+	chatRequest, err := buildActionChatRequest(p.config, request)
 	if err != nil {
 		return nil, err
 	}
-	content := strings.TrimSpace(response.Content)
+	content, err := p.client.Chat(ctx, chatRequest)
+	if err != nil {
+		return nil, err
+	}
+	content = strings.TrimSpace(content)
 	if content == "" {
 		return nil, fmt.Errorf("llm plan response content is empty")
 	}
@@ -81,12 +67,12 @@ func (p *ActionPlanner) Next(ctx context.Context, request Request) (Decision, er
 		return Decision{}, err
 	}
 
-	response, err := p.client.Chat(ctx, chatRequest)
+	content, err := p.client.Chat(ctx, chatRequest)
 	if err != nil {
 		return Decision{}, err
 	}
 
-	content := strings.TrimSpace(response.Content)
+	content = strings.TrimSpace(content)
 	if content == "" {
 		return Decision{}, fmt.Errorf("llm response content is empty")
 	}

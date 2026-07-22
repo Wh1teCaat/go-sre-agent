@@ -33,12 +33,8 @@ type ChatRequest struct {
 	Temperature float64
 }
 
-type ChatResponse struct {
-	Content string
-}
-
 // ChatClient 把通用 chat 请求适配到某个具体模型 provider，比如
-// OpenAI-compatible API、Ollama、Claude 或 Gemini。
+// OpenAI-compatible API、Ollama 或 Anthropic。
 type ChatClient interface {
-	Chat(ctx context.Context, request ChatRequest) (ChatResponse, error)
+	Chat(ctx context.Context, request ChatRequest) (string, error)
 }

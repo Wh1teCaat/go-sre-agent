@@ -42,9 +42,7 @@ func TestRequestJSONUsesPlannerFieldNames(t *testing.T) {
 
 func TestActionPlannerBuildsGenericChatRequestAndParsesAction(t *testing.T) {
 	client := &captureChatClient{
-		response: ChatResponse{
-			Content: `{"type":"final","thought_summary":"enough evidence","final":{"summary":"planner parsed action"}}`,
-		},
+		response: `{"type":"final","thought_summary":"enough evidence","final":{"summary":"planner parsed action"}}`,
 	}
 	planner := NewActionPlanner(client, ActionPlannerConfig{
 		Model:       "gpt-4o-mini",
@@ -104,7 +102,7 @@ func TestActionPlannerBuildsGenericChatRequestAndParsesAction(t *testing.T) {
 }
 
 func TestActionPlannerParsesPlanningDecision(t *testing.T) {
-	client := &captureChatClient{response: ChatResponse{Content: `{"needs_plan":true}`}}
+	client := &captureChatClient{response: `{"needs_plan":true}`}
 	planner := NewActionPlanner(client, ActionPlannerConfig{Model: "gpt-4o-mini", Skill: testSkillContent})
 
 	decision, err := planner.Next(context.Background(), Request{Goal: "检查多个依赖", Step: 1})
@@ -115,14 +113,14 @@ func TestActionPlannerParsesPlanningDecision(t *testing.T) {
 		t.Fatalf("decision = %#v, want planning request", decision)
 	}
 
-	client.response.Content = `{"needs_plan":true,"type":"final"}`
+	client.response = `{"needs_plan":true,"type":"final"}`
 	if _, err := planner.Next(context.Background(), Request{Goal: "检查多个依赖", Step: 1}); err == nil {
 		t.Fatal("mixed planning/action decision succeeded")
 	}
 }
 
 func TestActionPlannerParsesOptionalPlan(t *testing.T) {
-	client := &captureChatClient{response: ChatResponse{Content: `{"plan":{"reason":"需要检查后端","items":[{"id":"backend","goal":"检查后端"}]}}`}}
+	client := &captureChatClient{response: `{"plan":{"reason":"需要检查后端","items":[{"id":"backend","goal":"检查后端"}]}}`}
 	planner := NewActionPlanner(client, ActionPlannerConfig{Model: "gpt-4o-mini", Skill: testSkillContent})
 
 	plan, err := planner.Plan(context.Background(), Request{Goal: "检查后端"})
@@ -142,9 +140,7 @@ func TestActionPlannerParsesOptionalPlan(t *testing.T) {
 
 func TestActionPlannerParsesActionFromMarkdownJSONFence(t *testing.T) {
 	client := &captureChatClient{
-		response: ChatResponse{
-			Content: "```json\n{\"type\":\"final\",\"thought_summary\":\"enough evidence\",\"final\":{\"summary\":\"parsed fenced action\"}}\n```",
-		},
+		response: "```json\n{\"type\":\"final\",\"thought_summary\":\"enough evidence\",\"final\":{\"summary\":\"parsed fenced action\"}}\n```",
 	}
 	planner := NewActionPlanner(client, ActionPlannerConfig{Model: "gpt-4o-mini", Skill: testSkillContent})
 
@@ -167,9 +163,7 @@ func TestActionPlannerParsesActionFromMarkdownJSONFence(t *testing.T) {
 func TestActionPlannerDecodeErrorIncludesShortContentPreview(t *testing.T) {
 	longContent := strings.Repeat("not json ", 80)
 	client := &captureChatClient{
-		response: ChatResponse{
-			Content: longContent,
-		},
+		response: longContent,
 	}
 	planner := NewActionPlanner(client, ActionPlannerConfig{Model: "gpt-4o-mini", Skill: testSkillContent})
 
@@ -192,11 +186,11 @@ func TestActionPlannerDecodeErrorIncludesShortContentPreview(t *testing.T) {
 
 type captureChatClient struct {
 	request  ChatRequest
-	response ChatResponse
+	response string
 	calls    int
 }
 
-func (c *captureChatClient) Chat(ctx context.Context, request ChatRequest) (ChatResponse, error) {
+func (c *captureChatClient) Chat(ctx context.Context, request ChatRequest) (string, error) {
 	c.calls++
 	c.request = request
 	return c.response, nil

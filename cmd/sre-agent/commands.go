@@ -9,6 +9,8 @@ import (
 	"strings"
 )
 
+// runDiagnoseCommand 解析 diagnose 参数并执行新诊断。
+// 参数: args 为子命令参数；返回: 无，结果写入 stdout/stderr，失败时退出进程。
 func runDiagnoseCommand(args []string) {
 	fs := flag.NewFlagSet("diagnose", flag.ExitOnError)
 	goal := fs.String("goal", "", "diagnostic goal")
@@ -29,8 +31,7 @@ func runDiagnoseCommand(args []string) {
 		os.Exit(2)
 	}
 
-	// CLI 层只做参数收集和退出码处理；诊断执行和保存分别由
-	// startDiagnosisRun/saveDiagnosisRun 处理，避免依赖 os.Args 和 os.Exit。
+	// CLI 层只做参数收集和退出码处理。
 	result, err := startDiagnosisRun(context.Background(), diagnoseOptions{
 		Goal:        *goal,
 		ConfigPath:  *configPath,
@@ -39,15 +40,7 @@ func runDiagnoseCommand(args []string) {
 		ToolTimeout: *toolTimeout,
 		RunDir:      *runDir,
 	}, *mockScenario)
-	if err != nil {
-		if saveErr := saveDiagnosisRun(result); saveErr != nil {
-			fmt.Fprintf(os.Stderr, "%s\nsave run state: %v\n", runErrorMessage(result, err), saveErr)
-		} else {
-			fmt.Fprintln(os.Stderr, runErrorMessage(result, err))
-		}
-		os.Exit(1)
-	}
-	if err = saveDiagnosisRun(result); err != nil {
+	if err := saveDiagnosisResult(result, err); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
@@ -61,6 +54,8 @@ func runDiagnoseCommand(args []string) {
 	fmt.Print(markdown)
 }
 
+// runResumeCommand 解析 resume 参数并继续未完成的 run。
+// 参数: args 为子命令参数；返回: 无，结果写入 stdout/stderr，失败时退出进程。
 func runResumeCommand(args []string) {
 	fs := flag.NewFlagSet("resume", flag.ExitOnError)
 	runID := fs.String("run-id", "", "run id")
@@ -84,15 +79,7 @@ func runResumeCommand(args []string) {
 		LLMTimeout:  *llmTimeout,
 		ToolTimeout: *toolTimeout,
 	}, *mockScenario)
-	if err != nil {
-		if saveErr := saveDiagnosisRun(result); saveErr != nil {
-			fmt.Fprintf(os.Stderr, "%s\nsave run state: %v\n", runErrorMessage(result, err), saveErr)
-		} else {
-			fmt.Fprintln(os.Stderr, runErrorMessage(result, err))
-		}
-		os.Exit(1)
-	}
-	if err = saveDiagnosisRun(result); err != nil {
+	if err := saveDiagnosisResult(result, err); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
@@ -105,6 +92,8 @@ func runResumeCommand(args []string) {
 	fmt.Print(markdown)
 }
 
+// runStatusCommand 输出指定 run 的当前状态。
+// 参数: args 为子命令参数；返回: 无，JSON 写入 stdout，失败时退出进程。
 func runStatusCommand(args []string) {
 	fs := flag.NewFlagSet("status", flag.ExitOnError)
 	runID := fs.String("run-id", "", "run id")
@@ -122,6 +111,8 @@ func runStatusCommand(args []string) {
 	fmt.Println(content)
 }
 
+// runReportCommand 从已保存的 run 重新输出诊断报告。
+// 参数: args 为子命令参数；返回: 无，Markdown 写入 stdout，失败时退出进程。
 func runReportCommand(args []string) {
 	fs := flag.NewFlagSet("report", flag.ExitOnError)
 	runID := fs.String("run-id", "", "run id")
@@ -139,6 +130,8 @@ func runReportCommand(args []string) {
 	fmt.Print(content)
 }
 
+// runLLMCommand 执行底层 LLM ping 或 chat 连通性命令。
+// 参数: args 为 llm 子命令参数；返回: 无，模型响应写入 stdout，失败时退出进程。
 func runLLMCommand(args []string) {
 	if len(args) < 1 {
 		printUsageAndExit()
@@ -174,44 +167,23 @@ func runLLMCommand(args []string) {
 	}
 }
 
-func reportOutputPath(out string, reportDir string, runID string) string {
-	out = strings.TrimSpace(out)
-	if out != "" {
-		return out
-	}
-	reportDir = strings.TrimSpace(reportDir)
-	if reportDir == "" {
-		return ""
-	}
-	return filepath.Join(reportDir, runID+".md")
-}
-
+// markdownOutput 按需保存 Markdown，并始终返回终端输出内容。
+// 参数: out 为 CLI 路径，result 为诊断结果；返回: Markdown 内容或写入错误。
 func markdownOutput(out string, result diagnoseResult) (string, error) {
-	reportPath := reportOutputPath(out, result.ReportDir, result.State.RunID)
+	reportPath := strings.TrimSpace(out)
+	if reportPath == "" && strings.TrimSpace(result.ReportDir) != "" {
+		reportPath = filepath.Join(result.ReportDir, result.State.RunID+".md")
+	}
 	if reportPath != "" {
-		if err := writeMarkdownReport(reportPath, result.Markdown); err != nil {
-			return "", err
+		if err := os.MkdirAll(filepath.Dir(reportPath), 0o755); err != nil {
+			return "", fmt.Errorf("create report dir: %w", err)
+		}
+		if err := os.WriteFile(reportPath, []byte(result.Markdown), 0o600); err != nil {
+			return "", fmt.Errorf("write report: %w", err)
+		}
+		if err := os.Chmod(reportPath, 0o600); err != nil {
+			return "", fmt.Errorf("secure report: %w", err)
 		}
 	}
 	return result.Markdown, nil
-}
-
-func writeMarkdownReport(path string, markdown string) error {
-	dir := filepath.Dir(path)
-	if dir != "." && dir != "" {
-		if err := os.MkdirAll(dir, 0o755); err != nil {
-			return fmt.Errorf("create report dir: %w", err)
-		}
-	}
-	if err := os.WriteFile(path, []byte(markdown), 0o644); err != nil {
-		return fmt.Errorf("write report: %w", err)
-	}
-	return nil
-}
-
-func runErrorMessage(result diagnoseResult, err error) string {
-	if result.State.RunID == "" {
-		return err.Error()
-	}
-	return fmt.Sprintf("run_id: %s\n%s", result.State.RunID, err)
 }

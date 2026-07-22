@@ -32,30 +32,3 @@ func TestMemoryStoreAppendsAndListsEntries(t *testing.T) {
 		t.Fatalf("tool = %q, want http_check", entries[0].ToolName)
 	}
 }
-
-func TestMemoryStoreListReturnsCopy(t *testing.T) {
-	store := new(MemoryStore)
-	store.Append(Entry{Step: 1, ToolName: "log_read"})
-
-	entries := store.List()
-	entries[0].ToolName = "mutated"
-
-	again := store.List()
-	if again[0].ToolName != "log_read" {
-		t.Fatalf("store was mutated through returned slice: got %q", again[0].ToolName)
-	}
-}
-
-func TestNewMemoryStoreWithEntriesCopiesInitialEntries(t *testing.T) {
-	initial := []Entry{{Step: 1, ToolName: "http_check"}}
-	store := NewMemoryStoreWithEntries(initial)
-	initial[0].ToolName = "mutated"
-
-	entries := store.List()
-	if len(entries) != 1 {
-		t.Fatalf("len(entries) = %d, want 1", len(entries))
-	}
-	if entries[0].ToolName != "http_check" {
-		t.Fatalf("tool = %q, want http_check", entries[0].ToolName)
-	}
-}

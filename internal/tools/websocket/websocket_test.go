@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"net/url"
 	"strings"
 	"testing"
 )
@@ -26,7 +27,7 @@ func TestWebSocketCheckReturnsSuccessfulHandshakeObservation(t *testing.T) {
 		w.WriteHeader(http.StatusSwitchingProtocols)
 	})
 
-	tool := NewWithAllowedHosts(nil, nil)
+	tool := NewWithAllowedHosts(nil)
 	observation, err := tool.Run(context.Background(), mustArgs(t, Args{
 		URL: "ws://" + addr + "/ws",
 	}))
@@ -51,10 +52,10 @@ func TestWebSocketCheckReturnsSuccessfulHandshakeObservation(t *testing.T) {
 func TestWebSocketCheckReturnsFailedHandshakeObservationForHTTP500(t *testing.T) {
 	addr := startFakeWebSocketServer(t, func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusInternalServerError)
-		_, _ = w.Write([]byte("upgrade failed"))
+		_, _ = w.Write([]byte(`{"error":"password=secret"}`))
 	})
 
-	tool := NewWithAllowedHosts(nil, nil)
+	tool := NewWithAllowedHosts(nil)
 	observation, err := tool.Run(context.Background(), mustArgs(t, Args{
 		URL: "ws://" + addr + "/ws",
 	}))
@@ -68,10 +69,26 @@ func TestWebSocketCheckReturnsFailedHandshakeObservationForHTTP500(t *testing.T)
 	if observation.Data["status"] != http.StatusInternalServerError {
 		t.Fatalf("status = %#v, want 500", observation.Data["status"])
 	}
+	if got := observation.Data["body_snippet"]; got != `{"error":"password=[REDACTED]"}` {
+		t.Fatalf("body_snippet = %#v, want redacted body", got)
+	}
+}
+
+func TestWriteHandshakeRejectsCRLFHeader(t *testing.T) {
+	parsed, err := url.Parse("ws://localhost/ws")
+	if err != nil {
+		t.Fatalf("parse URL: %v", err)
+	}
+	client, _ := net.Pipe()
+	defer client.Close()
+
+	if err := writeHandshake(client, parsed, "key", map[string]string{"X-Test": "ok\r\nX-Injected: yes"}); err == nil {
+		t.Fatal("expected CRLF header value to be rejected")
+	}
 }
 
 func TestWebSocketCheckRejectsMissingURL(t *testing.T) {
-	tool := NewWithAllowedHosts(nil, nil)
+	tool := NewWithAllowedHosts(nil)
 
 	_, err := tool.Run(context.Background(), mustArgs(t, Args{}))
 	if err == nil {
@@ -80,7 +97,7 @@ func TestWebSocketCheckRejectsMissingURL(t *testing.T) {
 }
 
 func TestWebSocketCheckRejectsDisallowedHostBeforeDial(t *testing.T) {
-	tool := NewWithAllowedHosts(nil, []string{"localhost"})
+	tool := NewWithAllowedHosts([]string{"localhost"})
 
 	_, err := tool.Run(context.Background(), mustArgs(t, Args{
 		URL: "ws://example.com/ws",

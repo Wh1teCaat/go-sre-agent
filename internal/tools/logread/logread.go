@@ -56,17 +56,7 @@ func New(allowedDirs []string, maxLines int) *Tool {
 	}
 }
 
-func (t *Tool) Name() string {
-	return Name
-}
-
-func (t *Tool) Description() string {
-	return Spec().Description
-}
-
-func (t *Tool) Schema() tools.ToolSchema {
-	return Spec().Schema
-}
+func (t *Tool) Spec() tools.ToolSpec { return Spec() }
 
 func (t *Tool) Run(ctx context.Context, rawArgs json.RawMessage) (schema.Observation, error) {
 	select {

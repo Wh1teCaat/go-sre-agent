@@ -103,6 +103,21 @@ agent:
 	}
 }
 
+func TestLoadRejectsNonPositiveDuration(t *testing.T) {
+	for _, config := range []string{
+		"agent:\n  llm_timeout: 0s\n",
+		"agent:\n  tool_timeout: -1s\n",
+	} {
+		path := filepath.Join(t.TempDir(), "config.yaml")
+		if err := os.WriteFile(path, []byte(config), 0o644); err != nil {
+			t.Fatalf("write config: %v", err)
+		}
+		if _, err := Load(path); err == nil {
+			t.Fatalf("expected non-positive duration in %q to fail", config)
+		}
+	}
+}
+
 func contains(values []string, want string) bool {
 	for _, value := range values {
 		if value == want {

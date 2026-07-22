@@ -7,7 +7,7 @@ import (
 	"testing"
 )
 
-func TestLoadSkillStripsFrontmatterAndHashesSource(t *testing.T) {
+func TestLoadSkillStripsFrontmatter(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "SKILL.md")
 	source := "---\nname: example\ndescription: test\n---\n\nUse only observed evidence.\n"
 	if err := os.WriteFile(path, []byte(source), 0o644); err != nil {
@@ -18,14 +18,11 @@ func TestLoadSkillStripsFrontmatterAndHashesSource(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load skill: %v", err)
 	}
-	if skill.Content != "Use only observed evidence." {
-		t.Fatalf("content = %q", skill.Content)
+	if skill != "Use only observed evidence." {
+		t.Fatalf("content = %q", skill)
 	}
-	if skill.SHA256 == "" || len(skill.SHA256) != 64 {
-		t.Fatalf("sha256 = %q", skill.SHA256)
-	}
-	if strings.Contains(skill.Content, "description:") {
-		t.Fatalf("frontmatter leaked into model content: %q", skill.Content)
+	if strings.Contains(skill, "description:") {
+		t.Fatalf("frontmatter leaked into model content: %q", skill)
 	}
 }
 

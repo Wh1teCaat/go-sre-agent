@@ -13,7 +13,7 @@ type AllowedHosts map[string]struct{}
 func NewAllowedHosts(hosts []string) AllowedHosts {
 	allowed := make(AllowedHosts, len(hosts))
 	for _, host := range hosts {
-		normalized := NormalizeHost(host)
+		normalized := normalizeHost(host)
 		if normalized == "" {
 			continue
 		}
@@ -28,12 +28,11 @@ func (h AllowedHosts) Allows(host string) bool {
 	if len(h) == 0 {
 		return true
 	}
-	_, ok := h[NormalizeHost(host)]
+	_, ok := h[normalizeHost(host)]
 	return ok
 }
 
-// NormalizeHost 统一大小写、去掉端口和 IPv6 方括号，减少等价主机的匹配差异。
-func NormalizeHost(host string) string {
+func normalizeHost(host string) string {
 	normalized := strings.TrimSpace(strings.ToLower(host))
 	if normalized == "" {
 		return ""
@@ -46,5 +45,5 @@ func NormalizeHost(host string) string {
 
 // DisallowedHostError 返回统一的主机禁止访问错误，方便测试和上层报告识别。
 func DisallowedHostError(host string) error {
-	return fmt.Errorf("host %q is not allowed", NormalizeHost(host))
+	return fmt.Errorf("host %q is not allowed", normalizeHost(host))
 }

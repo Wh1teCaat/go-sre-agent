@@ -37,11 +37,7 @@ func NewCheck(open func(string) (sqlRunner, error)) *CheckTool {
 	return &CheckTool{open: open}
 }
 
-func (t *CheckTool) Name() string { return CheckName }
-
-func (t *CheckTool) Description() string { return CheckSpec().Description }
-
-func (t *CheckTool) Schema() tools.ToolSchema { return CheckSpec().Schema }
+func (t *CheckTool) Spec() tools.ToolSpec { return CheckSpec() }
 
 func (t *CheckTool) Run(ctx context.Context, rawArgs json.RawMessage) (schema.Observation, error) {
 	var args CheckArgs

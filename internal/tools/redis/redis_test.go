@@ -12,7 +12,7 @@ import (
 func TestRedisPingReturnsPongObservation(t *testing.T) {
 	addr := startFakeRedis(t, "+PONG\r\n")
 
-	tool := New(nil)
+	tool := New()
 	observation, err := tool.Run(context.Background(), mustArgs(t, Args{Addr: addr}))
 	if err != nil {
 		t.Fatalf("run redis ping: %v", err)
@@ -33,7 +33,7 @@ func TestRedisPingReturnsPongObservation(t *testing.T) {
 }
 
 func TestRedisPingRejectsMissingAddr(t *testing.T) {
-	tool := New(nil)
+	tool := New()
 
 	_, err := tool.Run(context.Background(), mustArgs(t, Args{}))
 	if err == nil {

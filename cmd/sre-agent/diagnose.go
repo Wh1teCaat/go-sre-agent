@@ -15,13 +15,15 @@ import (
 	"github.com/y2/go-sre-agent/internal/trace"
 )
 
+// startDiagnosisRun 创建新 run id 并执行一次全新诊断。
+// 参数: ctx 控制取消，opts 为诊断选项，mockScenario 为可选 mock；返回: 运行结果和诊断错误。
 func startDiagnosisRun(ctx context.Context, opts diagnoseOptions, mockScenario string) (diagnoseResult, error) {
 	startedAt := time.Now().UTC()
-	return executeDiagnosisRun(ctx, opts, mockScenario, runstore.NewRunID(startedAt), startedAt, nil, schema.Plan{})
+	return executeDiagnosisRun(ctx, opts, runstore.NewRunID(startedAt), startedAt, nil, schema.Plan{}, mockScenario)
 }
 
-// resumeDiagnosisRun 从已保存的 run state 恢复 trace，并用同一个 run id 更新保存结果。
-// 目标和历史 trace 来自 run state；目标环境参数来自配置文件。
+// resumeDiagnosisRun 从已保存的 run state 恢复 trace，并用同一个 run id 继续诊断。
+// 参数: ctx 控制取消，opts 指定 run 与覆盖项，mockScenario 为可选 mock；返回: 运行结果和诊断错误。
 func resumeDiagnosisRun(ctx context.Context, opts resumeOptions, mockScenario string) (diagnoseResult, error) {
 	if strings.TrimSpace(opts.RunID) == "" {
 		return diagnoseResult{}, fmt.Errorf("run id is required")
@@ -35,30 +37,46 @@ func resumeDiagnosisRun(ctx context.Context, opts resumeOptions, mockScenario st
 	if err != nil {
 		return diagnoseResult{}, err
 	}
-	if previous.Status == runstore.StatusCompleted && previous.Diagnosis != nil {
+	if previous.RunID != opts.RunID {
+		return diagnoseResult{}, fmt.Errorf("run %q contains mismatched run_id %q", opts.RunID, previous.RunID)
+	}
+	if previous.CreatedAt.IsZero() {
+		return diagnoseResult{}, fmt.Errorf("run %q is missing created_at", opts.RunID)
+	}
+	if strings.TrimSpace(previous.Goal) == "" {
+		return diagnoseResult{}, fmt.Errorf("run %q is missing goal", opts.RunID)
+	}
+	if previous.Status == runstore.StatusCompleted {
+		if previous.Diagnosis == nil {
+			return diagnoseResult{}, fmt.Errorf("completed run %q is missing diagnosis", opts.RunID)
+		}
 		return diagnoseResult{}, fmt.Errorf("run %q is already completed; use report instead", opts.RunID)
 	}
+	if previous.Status != runstore.StatusFailed {
+		return diagnoseResult{}, fmt.Errorf("run %q has unsupported status %q", opts.RunID, previous.Status)
+	}
+	if previous.Diagnosis != nil {
+		return diagnoseResult{}, fmt.Errorf("failed run %q unexpectedly contains diagnosis", opts.RunID)
+	}
 
-	result, runErr := executeDiagnosisRun(ctx, diagnoseOptions{
+	return executeDiagnosisRun(ctx, diagnoseOptions{
 		Goal:        previous.Goal,
 		ConfigPath:  opts.ConfigPath,
 		MaxSteps:    opts.MaxSteps,
 		LLMTimeout:  opts.LLMTimeout,
 		ToolTimeout: opts.ToolTimeout,
 		RunDir:      runDir,
-	}, mockScenario, previous.RunID, previous.CreatedAt, previous.Trace, previous.Plan)
-	return result, runErr
+	}, previous.RunID, previous.CreatedAt, previous.Trace, previous.Plan, mockScenario)
 }
 
-func executeDiagnosisRun(ctx context.Context, opts diagnoseOptions, mockScenario string, runID string, createdAt time.Time, existingTrace []trace.Entry, existingPlan schema.Plan) (diagnoseResult, error) {
+// executeDiagnosisRun 初始化 runtime，执行诊断并组装最终运行状态。
+// 参数: ctx 控制取消，opts 配置执行，runID/createdAt/existingTrace/existingPlan 恢复运行状态，mockScenario 为可选 mock；返回: 运行结果和错误。
+func executeDiagnosisRun(ctx context.Context, opts diagnoseOptions, runID string, createdAt time.Time, existingTrace []trace.Entry, existingPlan schema.Plan, mockScenario string) (diagnoseResult, error) {
 	setup, err := initializeDiagnosis(opts, mockScenario)
 	if err != nil {
 		return diagnoseResult{RunDir: setup.config.RunDir, ReportDir: setup.config.ReportDir}, err
 	}
 	cfg := setup.config
-	if createdAt.IsZero() {
-		createdAt = time.Now().UTC()
-	}
 
 	traceStore := trace.NewMemoryStoreWithEntries(existingTrace)
 	// Runtime 把 provider、registry、policy 和 trace 串起来：
@@ -85,7 +103,7 @@ func executeDiagnosisRun(ctx context.Context, opts diagnoseOptions, mockScenario
 			Status:    runstore.StatusFailed,
 			Plan:      runtime.Plan(),
 			Trace:     traceStore.List(),
-			Error:     err.Error(),
+			Error:     tools.RedactSensitive(err.Error()),
 			CreatedAt: createdAt,
 			UpdatedAt: time.Now().UTC(),
 		}
@@ -111,8 +129,8 @@ func executeDiagnosisRun(ctx context.Context, opts diagnoseOptions, mockScenario
 	return diagnoseResult{Markdown: markdown, State: state, RunDir: cfg.RunDir, ReportDir: cfg.ReportDir}, nil
 }
 
-// memoryHintsForDiagnose 把历史完成运行压缩成模型可见线索。
-// 旧 trace/evidence 不进入当前上下文，避免历史步骤被误当成本次证据。
+// memoryHintsForDiagnose 把历史完成运行压缩成模型可见线索，且不携带旧 evidence。
+// 参数: runDir 为状态目录，currentRunID 为当前运行；返回: 最近运行的脱敏摘要。
 func memoryHintsForDiagnose(runDir string, currentRunID string) []schema.Memory {
 	states := runstore.NewStore(runDir).RecentCompleted(3)
 	memories := make([]schema.Memory, 0, len(states))

@@ -1,6 +1,9 @@
 package tools
 
-import "regexp"
+import (
+	"regexp"
+	"strings"
+)
 
 var sensitivePatterns = []struct {
 	re          *regexp.Regexp
@@ -24,6 +27,63 @@ func RedactSensitive(text string) string {
 		redacted = pattern.re.ReplaceAllString(redacted, pattern.replacement)
 	}
 	return redacted
+}
+
+// RedactSensitiveValue 递归脱敏 map、slice 和字符串值，供 trace/observation
+// 持久化前使用。参数 value 为待处理的 JSON-like 值；返回不修改原值的副本。
+func RedactSensitiveValue(value any) any {
+	return redactValue("", value)
+}
+
+func redactValue(key string, value any) any {
+	if sensitiveKey(key) {
+		return "[REDACTED]"
+	}
+	switch typed := value.(type) {
+	case map[string]any:
+		redacted := make(map[string]any, len(typed))
+		for childKey, childValue := range typed {
+			redacted[childKey] = redactValue(childKey, childValue)
+		}
+		return redacted
+	case map[string]string:
+		redacted := make(map[string]string, len(typed))
+		for childKey, childValue := range typed {
+			if sensitiveKey(childKey) {
+				redacted[childKey] = "[REDACTED]"
+			} else {
+				redacted[childKey] = RedactSensitive(childValue)
+			}
+		}
+		return redacted
+	case []any:
+		redacted := make([]any, len(typed))
+		for i, childValue := range typed {
+			redacted[i] = redactValue("", childValue)
+		}
+		return redacted
+	case []string:
+		redacted := make([]string, len(typed))
+		for i, childValue := range typed {
+			redacted[i] = RedactSensitive(childValue)
+		}
+		return redacted
+	case string:
+		return RedactSensitive(typed)
+	default:
+		return value
+	}
+}
+
+func sensitiveKey(key string) bool {
+	normalized := strings.ReplaceAll(strings.ToLower(strings.TrimSpace(key)), "-", "_")
+	return normalized == "authorization" ||
+		normalized == "cookie" ||
+		normalized == "dsn" ||
+		strings.Contains(normalized, "password") ||
+		strings.Contains(normalized, "token") ||
+		strings.Contains(normalized, "api_key") ||
+		strings.Contains(normalized, "secret")
 }
 
 // RedactSensitiveLines 返回脱敏后的日志行副本，不修改调用方传入的切片内容。

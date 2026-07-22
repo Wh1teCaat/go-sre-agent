@@ -18,6 +18,7 @@ import (
 	"github.com/y2/go-sre-agent/internal/tools/websocket"
 )
 
+// diagnosisSetup 保存一次诊断启动后可直接注入 runtime 的依赖。
 type diagnosisSetup struct {
 	config   diagnoseOptions
 	registry *tools.Registry
@@ -25,6 +26,8 @@ type diagnosisSetup struct {
 	model    string
 }
 
+// initializeDiagnosis 解析配置并创建工具注册表与 LLM provider。
+// 参数: opts 为 CLI 诊断选项，mockScenario 为可选 mock 场景；返回: 完整启动依赖或初始化错误。
 func initializeDiagnosis(opts diagnoseOptions, mockScenario string) (diagnosisSetup, error) {
 	cfg, err := resolveDiagnosisConfig(opts)
 	setup := diagnosisSetup{config: cfg}
@@ -39,15 +42,17 @@ func initializeDiagnosis(opts diagnoseOptions, mockScenario string) (diagnosisSe
 	return setup, err
 }
 
+// buildToolRegistry 注册配置边界内允许使用的全部只读诊断工具。
+// 参数: cfg 为已解析诊断配置；返回: 工具注册表或注册错误。
 func buildToolRegistry(cfg diagnoseOptions) (*tools.Registry, error) {
 	registry := tools.NewRegistry()
 	all := []tools.Tool{
-		httpcheck.NewWithPolicy(nil, 2048, cfg.AllowedHosts, []string{loginURLForDiagnose(cfg)}),
+		httpcheck.NewWithPolicy(2048, cfg.AllowedHosts, []string{loginURLForDiagnose(cfg)}),
 		logread.New(cfg.AllowedLogDirs, 1000),
-		postgres.NewPing(nil),
+		postgres.NewPing(),
 		postgres.NewCheck(nil),
-		redis.New(nil),
-		websocket.NewWithAllowedHosts(nil, cfg.AllowedHosts),
+		redis.New(),
+		websocket.NewWithAllowedHosts(cfg.AllowedHosts),
 		docker.NewPS(cfg.AllowedContainers),
 		docker.NewInspect(cfg.AllowedContainers),
 		docker.NewLogs(cfg.AllowedContainers),
@@ -61,6 +66,7 @@ func buildToolRegistry(cfg diagnoseOptions) (*tools.Registry, error) {
 }
 
 // buildLLMProvider 根据环境配置选择 mock provider 或真实 ActionPlanner。
+// 参数: cfg 为诊断配置，mockScenario 为可选 mock 场景；返回: provider、模型名和初始化错误。
 func buildLLMProvider(cfg diagnoseOptions, mockScenario string) (llm.Provider, string, error) {
 	if mockScenario != "" {
 		actions, err := scenarioActions(mockScenario, cfg)
@@ -93,11 +99,12 @@ func buildLLMProvider(cfg diagnoseOptions, mockScenario string) (llm.Provider, s
 	return llm.NewActionPlanner(client, llm.ActionPlannerConfig{
 		Model:       llmConfig.Model,
 		Temperature: 0.2,
-		Skill:       skill.Content,
+		Skill:       skill,
 	}), llmConfig.Model, nil
 }
 
 // loadLLMConfig 优先读取当前目录 .env，找不到时回退到进程环境变量。
+// 参数: 无；返回: LLM 配置或读取解析错误。
 func loadLLMConfig() (llm.Config, error) {
 	const envPath = ".env"
 	if _, err := os.Stat(envPath); err == nil {
@@ -108,6 +115,8 @@ func loadLLMConfig() (llm.Config, error) {
 	return llm.LoadConfig("")
 }
 
+// newChatClient 按 provider 创建对应协议的 LLM 客户端。
+// 参数: config 为 LLM provider 配置；返回: ChatClient 或不支持/缺少配置错误。
 func newChatClient(config llm.Config) (llm.ChatClient, error) {
 	switch config.Provider {
 	case "openai_compatible":
@@ -127,19 +136,12 @@ func newChatClient(config llm.Config) (llm.ChatClient, error) {
 	}
 }
 
+// resolveDiagnosisConfig 按 CLI 覆盖、配置文件、默认值的优先级生成运行配置。
+// 参数: opts 为 CLI 诊断选项；返回: 已解析运行配置或配置错误。
 func resolveDiagnosisConfig(opts diagnoseOptions) (diagnoseOptions, error) {
-	if strings.TrimSpace(opts.Goal) == "" {
-		return diagnoseOptions{}, fmt.Errorf("goal is required")
-	}
-
-	configPath := resolveConfigPath(opts.ConfigPath)
-	cfg := appconfig.Default()
-	if configPath != "" {
-		loaded, err := appconfig.Load(configPath)
-		if err != nil {
-			return diagnoseOptions{}, err
-		}
-		cfg = loaded
+	cfg, err := loadAppConfig(opts.ConfigPath)
+	if err != nil {
+		return diagnoseOptions{}, err
 	}
 
 	allowedLogDirs := cfg.Policy.AllowedLogDirs
@@ -159,34 +161,10 @@ func resolveDiagnosisConfig(opts diagnoseOptions) (diagnoseOptions, error) {
 		MaxSteps:          cfg.Agent.MaxSteps,
 		LLMTimeout:        cfg.Agent.LLMTimeout,
 		ToolTimeout:       cfg.Agent.ToolTimeout,
-		SkillPath:         resolveSkillPath(configPath, cfg.Agent.SkillPath),
+		SkillPath:         cfg.Agent.SkillPath,
 		ToolAllowlist:     cfg.Policy.ToolAllowlist,
 		RunDir:            cfg.Paths.RunDir,
 		ReportDir:         cfg.Paths.ReportDir,
-	}
-	if opts.BackendBaseURL != "" {
-		resolved.BackendBaseURL = opts.BackendBaseURL
-	}
-	if opts.LogFile != "" {
-		resolved.LogFile = opts.LogFile
-	}
-	if len(opts.AllowedLogDirs) > 0 {
-		resolved.AllowedLogDirs = opts.AllowedLogDirs
-	}
-	if len(opts.AllowedHosts) > 0 {
-		resolved.AllowedHosts = opts.AllowedHosts
-	}
-	if len(opts.AllowedContainers) > 0 {
-		resolved.AllowedContainers = opts.AllowedContainers
-	}
-	if opts.PostgresDSN != "" {
-		resolved.PostgresDSN = opts.PostgresDSN
-	}
-	if opts.RedisAddr != "" {
-		resolved.RedisAddr = opts.RedisAddr
-	}
-	if opts.WebSocketURL != "" {
-		resolved.WebSocketURL = opts.WebSocketURL
 	}
 	if opts.MaxSteps > 0 {
 		resolved.MaxSteps = opts.MaxSteps
@@ -197,72 +175,36 @@ func resolveDiagnosisConfig(opts diagnoseOptions) (diagnoseOptions, error) {
 	if opts.ToolTimeout > 0 {
 		resolved.ToolTimeout = opts.ToolTimeout
 	}
-	if len(opts.ToolAllowlist) > 0 {
-		resolved.ToolAllowlist = opts.ToolAllowlist
-	}
 	if opts.RunDir != "" {
 		resolved.RunDir = opts.RunDir
-	}
-	if opts.ReportDir != "" {
-		resolved.ReportDir = opts.ReportDir
 	}
 	return resolved, nil
 }
 
+// resolveRunDir 解析 CLI 或配置文件指定的 run 状态目录。
+// 参数: configPath 为配置路径，runDir 为 CLI 覆盖值；返回: 最终目录或配置错误。
 func resolveRunDir(configPath, runDir string) (string, error) {
 	if strings.TrimSpace(runDir) != "" {
 		return runDir, nil
 	}
-	cfg := appconfig.Default()
-	if configPath = resolveConfigPath(configPath); configPath != "" {
-		loaded, err := appconfig.Load(configPath)
-		if err != nil {
-			return "", err
-		}
-		cfg = loaded
+	cfg, err := loadAppConfig(configPath)
+	if err != nil {
+		return "", err
 	}
 	return cfg.Paths.RunDir, nil
 }
 
-func resolveConfigPath(configPath string) string {
-	if strings.TrimSpace(configPath) != "" {
-		return configPath
+// loadAppConfig 加载显式或默认路径下的 YAML 配置。
+// 参数: configPath 为 CLI 指定路径；返回: 配置和加载错误。
+func loadAppConfig(configPath string) (appconfig.Config, error) {
+	if strings.TrimSpace(configPath) == "" {
+		configPath = "configs/config.yaml"
 	}
-	if _, err := os.Stat("configs/config.yaml"); !os.IsNotExist(err) {
-		return "configs/config.yaml"
-	}
-	return ""
+	return appconfig.Load(configPath)
 }
 
-func resolveSkillPath(configPath, skillPath string) string {
-	skillPath = strings.TrimSpace(skillPath)
-	if skillPath == "" || filepath.IsAbs(skillPath) {
-		return skillPath
-	}
-	if _, err := os.Stat(skillPath); err == nil {
-		return skillPath
-	}
-	if configPath != "" {
-		candidate := filepath.Join(filepath.Dir(configPath), skillPath)
-		if _, err := os.Stat(candidate); err == nil {
-			return candidate
-		}
-	}
-	if cwd, err := os.Getwd(); err == nil {
-		for dir := cwd; ; dir = filepath.Dir(dir) {
-			candidate := filepath.Join(dir, skillPath)
-			if _, err := os.Stat(candidate); err == nil {
-				return candidate
-			}
-			parent := filepath.Dir(dir)
-			if parent == dir {
-				break
-			}
-		}
-	}
-	return skillPath
-}
-
+// targetContextForDiagnose 构造不含凭据的 LLM 目标上下文。
+// 参数: cfg 为诊断配置；返回: 提供给 LLM 的目标与白名单信息。
 func targetContextForDiagnose(cfg diagnoseOptions) map[string]any {
 	return map[string]any{
 		"backend_base_url":        cfg.BackendBaseURL,
@@ -277,6 +219,8 @@ func targetContextForDiagnose(cfg diagnoseOptions) map[string]any {
 	}
 }
 
+// loginURLForDiagnose 根据后端地址生成允许 POST 的登录诊断地址。
+// 参数: cfg 为诊断配置；返回: 登录 URL，后端地址为空时返回空字符串。
 func loginURLForDiagnose(cfg diagnoseOptions) string {
 	if strings.TrimSpace(cfg.BackendBaseURL) == "" {
 		return ""
@@ -284,6 +228,8 @@ func loginURLForDiagnose(cfg diagnoseOptions) string {
 	return strings.TrimRight(cfg.BackendBaseURL, "/") + "/v1/user/login"
 }
 
+// toolArgOverridesForDiagnose 固定依赖工具参数，防止模型改写配置目标。
+// 参数: cfg 为诊断配置；返回: 按工具名组织的强制参数，无覆盖时返回 nil。
 func toolArgOverridesForDiagnose(cfg diagnoseOptions) map[string]map[string]any {
 	overrides := map[string]map[string]any{}
 	if dsn := strings.TrimSpace(cfg.PostgresDSN); dsn != "" {
@@ -299,6 +245,8 @@ func toolArgOverridesForDiagnose(cfg diagnoseOptions) map[string]map[string]any 
 	return overrides
 }
 
+// safePostgresDSNForPrompt 移除 DSN 密码后再暴露给 LLM。
+// 参数: dsn 为原始 PostgreSQL DSN；返回: 脱敏 DSN 或脱敏占位符。
 func safePostgresDSNForPrompt(dsn string) string {
 	dsn = strings.TrimSpace(dsn)
 	if dsn == "" {
@@ -321,6 +269,8 @@ func safePostgresDSNForPrompt(dsn string) string {
 	return tools.RedactSensitive(dsn)
 }
 
+// toolSchemasFromRegistry 提取实际注册工具的参数 schema 供 policy 校验。
+// 参数: registry 为工具注册表；返回: 工具名到参数 schema 的映射。
 func toolSchemasFromRegistry(registry *tools.Registry) map[string]tools.ToolSchema {
 	schemas := map[string]tools.ToolSchema{}
 	for _, spec := range registry.List() {

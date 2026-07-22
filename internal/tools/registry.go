@@ -17,7 +17,7 @@ func (r *Registry) Register(tool Tool) error {
 	if tool == nil {
 		return fmt.Errorf("tool is nil")
 	}
-	name := tool.Name()
+	name := tool.Spec().Name
 	if name == "" {
 		return fmt.Errorf("tool name is empty")
 	}
@@ -44,12 +44,7 @@ func (r *Registry) List() []ToolSpec {
 
 	specs := make([]ToolSpec, 0, len(names))
 	for _, name := range names {
-		tool := r.tools[name]
-		specs = append(specs, ToolSpec{
-			Name:        tool.Name(),
-			Description: tool.Description(),
-			Schema:      tool.Schema(),
-		})
+		specs = append(specs, r.tools[name].Spec())
 	}
 	return specs
 }
