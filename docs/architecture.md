@@ -8,6 +8,7 @@
 - `cmd/sre-agent/diagnose.go`: start/resume orchestration, task deadline, and run checkpoint wiring.
 - `cmd/sre-agent/run.go`: terminal run persistence, status lookup, and report reload.
 - `cmd/sre-agent/commands.go`: CLI flag parsing, exit handling, and output.
+- `cmd/sre-agent/interactive*.go`: 默认 `sre` 逐行交互入口、会话状态、局部命令分派、进度渲染和取消处理；它直接复用诊断、运行、会话、记忆和评测应用函数，不通过子进程再次调用 CLI。
 - `cmd/sre-agent/memory_command.go`: 固定 `memories/` 根目录的收录、检索、重建和生命周期命令。
 - `internal/agent`: runtime loop, state, prompt boundary, execution boundary.
 - `internal/llm`: provider interface, action planner, generic chat types/config, mock provider, OpenAI-compatible/Ollama client, and Anthropic Messages client.
@@ -30,6 +31,10 @@
 8. Create a durable call ID for every selected tool. Independent read-only `tool_calls` batches run with bounded parallelism; trace/checkpoint writes remain serialized.
 9. Tool failures return as observations; the next decision may request planning or continue normal ReAct.
 10. Stop on `final`, cancellation, total-task timeout, or an error after `max_steps`.
+
+## 交互入口
+
+`sre` 无子命令时仅在终端标准输入下进入交互会话；管道或重定向会提示使用脚本子命令并退出。交互状态保存当前配置、环境、会话 ID、最近 run ID 和任务状态，终端文案不是状态来源。普通文本创建新 run，`/` 命令由本地解析器处理；历史会话和跨会话 memory 仍由同一诊断路径按预算自动加载与收录。进度事件写入 stderr，报告与结构化状态写入 stdout，二者共享安全的终端渲染边界。
 
 ## 安全边界
 

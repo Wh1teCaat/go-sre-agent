@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -130,6 +131,43 @@ func (s *Store) Load(runID string) (State, error) {
 		return State{}, fmt.Errorf("decode run state: %w", err)
 	}
 	return state, nil
+}
+
+// List 读取存储根目录下全部有效 run，并按最近更新时间倒序返回。空或尚未创建的目录
+// 返回空列表，损坏的运行记录会明确返回错误，避免交互界面遗漏恢复候选项。
+func (s *Store) List() ([]State, error) {
+	if s == nil {
+		return nil, fmt.Errorf("run store is nil")
+	}
+	entries, err := os.ReadDir(s.dir)
+	if os.IsNotExist(err) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("read run directory: %w", err)
+	}
+	runs := make([]State, 0, len(entries))
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
+			continue
+		}
+		runID := strings.TrimSuffix(entry.Name(), ".json")
+		if !safeRunID(runID) {
+			return nil, fmt.Errorf("unsafe run file %q", entry.Name())
+		}
+		state, err := s.Load(runID)
+		if err != nil {
+			return nil, err
+		}
+		runs = append(runs, state)
+	}
+	sort.Slice(runs, func(left, right int) bool {
+		if !runs[left].UpdatedAt.Equal(runs[right].UpdatedAt) {
+			return runs[left].UpdatedAt.After(runs[right].UpdatedAt)
+		}
+		return runs[left].RunID > runs[right].RunID
+	})
+	return runs, nil
 }
 
 func (s *Store) path(runID string) (string, error) {

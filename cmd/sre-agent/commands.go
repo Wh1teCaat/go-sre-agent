@@ -4,6 +4,7 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -13,10 +14,11 @@ import (
 	memory "github.com/y2/go-sre-agent/internal/memory"
 )
 
-// runDiagnoseCommand 解析 diagnose 参数并执行新诊断。
-// 参数: args 为子命令参数；返回: 无，结果写入 stdout/stderr，失败时退出进程。
-func runDiagnoseCommand(args []string) {
-	fs := flag.NewFlagSet("diagnose", flag.ExitOnError)
+// runDiagnoseCommand 解析脚本 diagnose 参数并复用诊断应用函数。它不退出进程，
+// 因而最外层入口和交互入口可以采用各自合适的错误处理方式。
+func runDiagnoseCommand(args []string, stdout, stderr io.Writer) int {
+	fs := flag.NewFlagSet("diagnose", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
 	goal := fs.String("goal", "", "diagnostic goal")
 	configPath := fs.String("config", "", "config file path")
 	mockScenario := fs.String("mock-scenario", "", "mock scenario name")
@@ -35,19 +37,21 @@ func runDiagnoseCommand(args []string) {
 	overwriteSessionMemory := fs.Bool("overwrite-session-memory", false, "allow overwrite of manually changed generated session memory")
 	out := fs.String("out", "", "override markdown report file")
 	if err := fs.Parse(args); err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		os.Exit(2)
+		fmt.Fprintln(stderr, err)
+		return 2
+	}
+	if fs.NArg() != 0 {
+		fmt.Fprintf(stderr, "unexpected diagnose argument %q\n", fs.Arg(0))
+		return 2
+	}
+	if strings.TrimSpace(*goal) == "" {
+		fmt.Fprintln(stderr, "--goal is required")
+		return 2
 	}
 
-	if *goal == "" {
-		fmt.Fprintln(os.Stderr, "--goal is required")
-		os.Exit(2)
-	}
-
-	// CLI 层只做参数收集和退出码处理。
 	ctx, stop := commandContext()
 	defer stop()
-	progress := newCLIProgressWriter(os.Stderr)
+	progress := newCLIProgressWriter(stderr)
 	result, err := startDiagnosisRun(ctx, diagnoseOptions{
 		Goal:                   *goal,
 		ConfigPath:             *configPath,
@@ -68,31 +72,31 @@ func runDiagnoseCommand(args []string) {
 		OverwriteSessionMemory: *overwriteSessionMemory,
 	}, *mockScenario)
 	if err := saveDiagnosisResult(result, err); err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		os.Exit(1)
+		fmt.Fprintln(stderr, err)
+		return 1
 	}
-	fmt.Fprintf(os.Stderr, "run_id: %s\n", result.State.RunID)
+	fmt.Fprintf(stderr, "run_id: %s\n", result.State.RunID)
 	if result.State.SessionID != "" {
-		fmt.Fprintf(os.Stderr, "session_id: %s\n", result.State.SessionID)
+		fmt.Fprintf(stderr, "session_id: %s\n", result.State.SessionID)
 	}
-
 	markdown, err := markdownOutput(*out, result)
 	if err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		os.Exit(1)
+		fmt.Fprintln(stderr, err)
+		return 1
 	}
 	if *out != "" || result.ReportDir != "" {
-		fmt.Fprintln(os.Stderr, "诊断完成，报告已保存。")
+		fmt.Fprintln(stderr, "诊断完成，报告已保存。")
 	} else {
-		fmt.Fprintln(os.Stderr, "诊断完成。")
+		fmt.Fprintln(stderr, "诊断完成。")
 	}
-	fmt.Print(markdown)
+	fmt.Fprint(stdout, markdown)
+	return 0
 }
 
-// runResumeCommand 解析 resume 参数并继续未完成的 run。
-// 参数: args 为子命令参数；返回: 无，结果写入 stdout/stderr，失败时退出进程。
-func runResumeCommand(args []string) {
-	fs := flag.NewFlagSet("resume", flag.ExitOnError)
+// runResumeCommand 解析脚本 resume 参数，并复用受既有安全限制保护的恢复路径。
+func runResumeCommand(args []string, stdout, stderr io.Writer) int {
+	fs := flag.NewFlagSet("resume", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
 	runID := fs.String("run-id", "", "run id")
 	configPath := fs.String("config", "", "config file path")
 	mockScenario := fs.String("mock-scenario", "", "mock scenario name")
@@ -111,13 +115,21 @@ func runResumeCommand(args []string) {
 	overwriteSessionMemory := fs.Bool("overwrite-session-memory", false, "allow overwrite of manually changed generated session memory")
 	out := fs.String("out", "", "override markdown report file")
 	if err := fs.Parse(args); err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		os.Exit(2)
+		fmt.Fprintln(stderr, err)
+		return 2
+	}
+	if fs.NArg() != 0 {
+		fmt.Fprintf(stderr, "unexpected resume argument %q\n", fs.Arg(0))
+		return 2
+	}
+	if strings.TrimSpace(*runID) == "" {
+		fmt.Fprintln(stderr, "--run-id is required")
+		return 2
 	}
 
 	ctx, stop := commandContext()
 	defer stop()
-	progress := newCLIProgressWriter(os.Stderr)
+	progress := newCLIProgressWriter(stderr)
 	result, err := resumeDiagnosisRun(ctx, resumeOptions{
 		RunID:                  *runID,
 		RunDir:                 *runDir,
@@ -138,109 +150,126 @@ func runResumeCommand(args []string) {
 		ResumeRunning:          *resumeRunning,
 	}, *mockScenario)
 	if err := saveDiagnosisResult(result, err); err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		os.Exit(1)
+		fmt.Fprintln(stderr, err)
+		return 1
 	}
-	fmt.Fprintf(os.Stderr, "run_id: %s\n", result.State.RunID)
+	fmt.Fprintf(stderr, "run_id: %s\n", result.State.RunID)
 	if result.State.SessionID != "" {
-		fmt.Fprintf(os.Stderr, "session_id: %s\n", result.State.SessionID)
+		fmt.Fprintf(stderr, "session_id: %s\n", result.State.SessionID)
 	}
 	markdown, err := markdownOutput(*out, result)
 	if err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		os.Exit(1)
+		fmt.Fprintln(stderr, err)
+		return 1
 	}
 	if *out != "" || result.ReportDir != "" {
-		fmt.Fprintln(os.Stderr, "诊断完成，报告已保存。")
+		fmt.Fprintln(stderr, "诊断完成，报告已保存。")
 	} else {
-		fmt.Fprintln(os.Stderr, "诊断完成。")
+		fmt.Fprintln(stderr, "诊断完成。")
 	}
-	fmt.Print(markdown)
+	fmt.Fprint(stdout, markdown)
+	return 0
 }
 
-// commandContext 返回会被 Ctrl-C 或 SIGTERM 取消的上下文。调用方应在持久化
-// 最终 checkpoint 后调用 stop。
+// commandContext 返回会被 Ctrl-C 或 SIGTERM 取消的脚本命令上下文。
 func commandContext() (context.Context, context.CancelFunc) {
 	return signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 }
 
-// runStatusCommand 输出指定 run 的当前状态。
-// 参数: args 为子命令参数；返回: 无，JSON 写入 stdout，失败时退出进程。
-func runStatusCommand(args []string) {
-	fs := flag.NewFlagSet("status", flag.ExitOnError)
+// runStatusCommand 输出指定 run 的机器可读状态。
+func runStatusCommand(args []string, stdout, stderr io.Writer) int {
+	fs := flag.NewFlagSet("status", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
 	runID := fs.String("run-id", "", "run id")
 	configPath := fs.String("config", "", "config file path")
 	runDir := fs.String("run-dir", "", "override run state directory")
 	if err := fs.Parse(args); err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		os.Exit(2)
+		fmt.Fprintln(stderr, err)
+		return 2
+	}
+	if fs.NArg() != 0 || strings.TrimSpace(*runID) == "" {
+		fmt.Fprintln(stderr, "status requires --run-id <run_id>")
+		return 2
 	}
 	content, err := readDiagnosisStatus(runOptions{RunID: *runID, ConfigPath: *configPath, RunDir: *runDir})
 	if err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		os.Exit(1)
+		fmt.Fprintln(stderr, err)
+		return 1
 	}
-	fmt.Println(content)
+	fmt.Fprintln(stdout, content)
+	return 0
 }
 
-// runReportCommand 从已保存的 run 重新输出诊断报告。
-// 参数: args 为子命令参数；返回: 无，Markdown 写入 stdout，失败时退出进程。
-func runReportCommand(args []string) {
-	fs := flag.NewFlagSet("report", flag.ExitOnError)
+// runReportCommand 从已保存运行渲染 Markdown 报告。
+func runReportCommand(args []string, stdout, stderr io.Writer) int {
+	fs := flag.NewFlagSet("report", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
 	runID := fs.String("run-id", "", "run id")
 	configPath := fs.String("config", "", "config file path")
 	runDir := fs.String("run-dir", "", "override run state directory")
 	if err := fs.Parse(args); err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		os.Exit(2)
+		fmt.Fprintln(stderr, err)
+		return 2
+	}
+	if fs.NArg() != 0 || strings.TrimSpace(*runID) == "" {
+		fmt.Fprintln(stderr, "report requires --run-id <run_id>")
+		return 2
 	}
 	content, err := renderDiagnosisReport(runOptions{RunID: *runID, ConfigPath: *configPath, RunDir: *runDir})
 	if err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		os.Exit(1)
+		fmt.Fprintln(stderr, err)
+		return 1
 	}
-	fmt.Print(content)
+	fmt.Fprint(stdout, content)
+	return 0
 }
 
-// runLLMCommand 执行底层 LLM ping 或 chat 连通性命令。
-// 参数: args 为 llm 子命令参数；返回: 无，模型响应写入 stdout，失败时退出进程。
-func runLLMCommand(args []string) {
-	if len(args) < 1 {
-		printUsageAndExit()
+// runLLMCommand 执行直接模型调试，不创建诊断 run。
+func runLLMCommand(args []string, stdout, stderr io.Writer) int {
+	if len(args) == 0 {
+		printUsage(stderr)
+		return 2
 	}
-
 	switch args[0] {
 	case "ping":
+		if len(args) != 1 {
+			fmt.Fprintln(stderr, "usage: sre llm ping")
+			return 2
+		}
 		content, err := pingLLM(context.Background())
 		if err != nil {
-			fmt.Fprintln(os.Stderr, err)
-			os.Exit(1)
+			fmt.Fprintln(stderr, err)
+			return 1
 		}
-		fmt.Println(content)
+		fmt.Fprintln(stdout, content)
+		return 0
 	case "chat":
-		fs := flag.NewFlagSet("llm chat", flag.ExitOnError)
+		fs := flag.NewFlagSet("llm chat", flag.ContinueOnError)
+		fs.SetOutput(io.Discard)
 		message := fs.String("message", "", "message to send to the configured LLM")
 		if err := fs.Parse(args[1:]); err != nil {
-			fmt.Fprintln(os.Stderr, err)
-			os.Exit(2)
+			fmt.Fprintln(stderr, err)
+			return 2
 		}
-		if strings.TrimSpace(*message) == "" {
-			fmt.Fprintln(os.Stderr, "--message is required")
-			os.Exit(2)
+		if fs.NArg() != 0 || strings.TrimSpace(*message) == "" {
+			fmt.Fprintln(stderr, "llm chat requires --message <message>")
+			return 2
 		}
 		content, err := chatWithLLM(context.Background(), *message)
 		if err != nil {
-			fmt.Fprintln(os.Stderr, err)
-			os.Exit(1)
+			fmt.Fprintln(stderr, err)
+			return 1
 		}
-		fmt.Println(content)
+		fmt.Fprintln(stdout, content)
+		return 0
 	default:
-		printUsageAndExit()
+		fmt.Fprintf(stderr, "unknown llm command %q\n", args[0])
+		printUsage(stderr)
+		return 2
 	}
 }
 
 // markdownOutput 按需保存 Markdown，并始终返回终端输出内容。
-// 参数: out 为 CLI 路径，result 为诊断结果；返回: Markdown 内容或写入错误。
 func markdownOutput(out string, result diagnoseResult) (string, error) {
 	reportPath := strings.TrimSpace(out)
 	if reportPath == "" && strings.TrimSpace(result.ReportDir) != "" {

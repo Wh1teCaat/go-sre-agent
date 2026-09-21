@@ -44,7 +44,20 @@ Policy 校验 action
 - 可选：OpenAI-compatible、Ollama 或 Anthropic 模型服务
 - 可选：Docker CLI（仅使用 Docker 诊断工具时需要）
 
-### 1. 准备配置
+### 1. 构建或安装 `sre`
+
+`cmd/sre-agent` 是源码目录名；为避免 `go install` 默认生成 `sre-agent`，
+请显式指定对外二进制名：
+
+```bash
+go build -o ./sre ./cmd/sre-agent
+# 可选：安装到 Go 的 bin 目录，之后可在 PATH 中直接使用 sre
+install -m 0755 ./sre "$(go env GOPATH)/bin/sre"
+```
+
+以下示例假设 `sre` 已在 `PATH`；仅做本地构建时将其替换为 `./sre`。
+
+### 2. 准备配置
 
 ```bash
 cp configs/config.example.yaml configs/config.yaml
@@ -53,28 +66,40 @@ cp .env.example .env
 
 在 `configs/config.yaml` 中设置被诊断程序的地址、依赖连接信息和访问白名单；未传 `--config` 时 CLI 会自动读取该文件。使用其他路径时再显式传入 `--config`。如需使用真实模型，在 `.env` 中填写对应 provider 的地址、模型和 api。
 
-### 2. 验证模型连接
+### 3. 验证模型连接
 
 ```bash
-go run ./cmd/sre-agent llm ping
+sre llm ping
 ```
 
 也可以跳过真实模型，直接运行内置 mock 场景：
 
 ```bash
-go run ./cmd/sre-agent diagnose \
+sre diagnose \
   --mock-scenario login-500 \
   --goal "诊断登录接口为什么返回 500"
 ```
 
-### 3. 运行真实诊断
+### 4. 运行真实诊断
 
 ```bash
-go run ./cmd/sre-agent diagnose \
+sre diagnose \
   --goal "诊断登录接口为什么返回 500"
 ```
 
 报告会输出到终端；配置了 `paths.report_dir` 后也会保存为 Markdown 文件。运行状态默认保存在 `.runs/`，同一问题的会话状态默认保存在 `.sessions/`。
+
+### 5. 进入交互会话
+
+不带子命令时，`sre` 进入逐行交互会话。普通文本会创建诊断 run；斜杠命令由本地解析器处理，不会交给模型或 shell。
+
+```bash
+sre --config configs/config.yaml --environment local
+# 或恢复指定会话的上下文（不会自动恢复未完成 run）
+sre --session-id <session_id>
+```
+
+每次诊断会自动加载当前会话历史，并按服务、环境和目标查询至多 3 条、总计 12 KiB 的跨会话记忆作为待验证线索；无需先执行 `/memory`。交互命令、取消和恢复说明见 [交互式 CLI](docs/interactive-cli.md)。
 
 ## 配置
 
@@ -136,29 +161,29 @@ targets:
 
 ```bash
 # 测试模型连接
-go run ./cmd/sre-agent llm ping
+sre llm ping
 
 # 发送一条模型消息
-go run ./cmd/sre-agent llm chat --message "hello"
+sre llm chat --message "hello"
 
 # 查看运行状态
-go run ./cmd/sre-agent status --run-id <run_id>
+sre status --run-id <run_id>
 
 # 恢复未完成的运行
-go run ./cmd/sre-agent resume --run-id <run_id> --max-steps 20
+sre resume --run-id <run_id> --max-steps 20
 
 # 使用已有会话开始新的连续诊断 run
-go run ./cmd/sre-agent diagnose --session-id <session_id> --goal "复查当前问题"
+sre diagnose --session-id <session_id> --goal "复查当前问题"
 
 # 根据已保存的 trace 重新生成报告
-go run ./cmd/sre-agent report --run-id <run_id>
+sre report --run-id <run_id>
 
 # 查询固定 memories/ 根目录中的同服务、同环境历史复盘（JSON 输出）
-go run ./cmd/sre-agent memory search --goal "Redis 连接超时"
+sre memory search --goal "Redis 连接超时"
 
 # 从已保存 run 手动收录或重建跨会话索引
-go run ./cmd/sre-agent memory collect --run-id <run_id>
-go run ./cmd/sre-agent memory rebuild
+sre memory collect --run-id <run_id>
+sre memory rebuild
 ```
 
 会话记忆的文件结构、隔离规则和人工编辑处理见 [docs/session-memory.md](docs/session-memory.md)。

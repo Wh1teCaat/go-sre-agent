@@ -31,7 +31,7 @@ docker compose stop backend
 
 ```bash
 cd /home/y2/project/go-sre-agent
-go run ./cmd/sre-agent diagnose \
+sre diagnose \
   --config configs/config.yaml \
   --max-steps 10 \
   --goal "诊断 chat_proj 后端为什么无法访问。检查 HTTP、容器状态、退出码和最近容器日志，并给出基于本次证据的结论。"
@@ -59,7 +59,7 @@ docker compose stop redis
 
 ```bash
 cd /home/y2/project/go-sre-agent
-go run ./cmd/sre-agent diagnose \
+sre diagnose \
   --config configs/config.yaml \
   --max-steps 12 \
   --goal "诊断 chat_proj 当前依赖健康状态。检查后端、Redis 连通性、Redis 容器状态和后端最近日志，判断缓存故障是否影响服务启动或登录链路。最终结论只能引用本次 trace。"
@@ -92,7 +92,7 @@ docker compose exec postgres psql -U postgres -d chat_proj \
 
 ```bash
 cd /home/y2/project/go-sre-agent
-go run ./cmd/sre-agent diagnose \
+sre diagnose \
   --config configs/config.yaml \
   --max-steps 12 \
   --goal '诊断 chat_proj 登录链路。使用 POST JSON body {"email":"test@example.com","password":"testpwd"} 请求 /v1/user/login，检查 PostgreSQL 认证和 users 表、后端容器状态及最近 ERROR 日志；若没有复现 500，必须报告本次实际状态。'
@@ -114,7 +114,7 @@ docker compose exec postgres psql -U postgres -d chat_proj \
 
 ```bash
 cd /home/y2/project/go-sre-agent
-go run ./cmd/sre-agent diagnose \
+sre diagnose \
   --config configs/config.yaml \
   --max-steps 10 \
   --goal "诊断 chat_proj WebSocket /v1/ws 为什么连接失败。检查握手状态、后端状态和最近 websocket 相关日志，区分服务不可达、鉴权失败与协议升级失败。"
@@ -133,8 +133,8 @@ docker compose ps
 每次运行都会生成 `run_id`。可用 `status` 查看计划和 trace，或用 `report` 重建报告：
 
 ```bash
-go run ./cmd/sre-agent status --config configs/config.yaml --run-id <run_id>
-go run ./cmd/sre-agent report --config configs/config.yaml --run-id <run_id>
+sre status --config configs/config.yaml --run-id <run_id>
+sre report --config configs/config.yaml --run-id <run_id>
 ```
 
 ## 自动化回归

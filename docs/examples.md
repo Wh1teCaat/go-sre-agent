@@ -5,13 +5,13 @@
 如果只想确认 `.env` 里的模型配置能否调用成功，可以直接测试底层 `ChatClient`：
 
 ```bash
-sre-agent llm ping
+sre llm ping
 ```
 
 也可以输入自己的消息：
 
 ```bash
-sre-agent llm chat --message "用一句话说明 SRE 诊断 Agent 是什么"
+sre llm chat --message "用一句话说明 SRE 诊断 Agent 是什么"
 ```
 
 这条路径只打印模型原始文本，不进入 Agent runtime，也不会调用工具。
@@ -19,7 +19,7 @@ sre-agent llm chat --message "用一句话说明 SRE 诊断 Agent 是什么"
 ## 真实 LLM 诊断烟测
 
 ```bash
-sre-agent diagnose \
+sre diagnose \
   --config configs/config.example.yaml \
   --goal "仅验证真实 ActionPlanner 和 ChatClient 接入，不调用工具，直接生成 final 诊断"
 ```
@@ -29,7 +29,7 @@ sre-agent diagnose \
 ## 登录接口 500
 
 ```bash
-sre-agent diagnose \
+sre diagnose \
   --config configs/config.example.yaml \
   --mock-scenario login-500 \
   --goal "诊断 chat_proj 登录接口 /v1/user/login 为什么返回 500"
@@ -49,19 +49,19 @@ sre-agent diagnose \
 `.runs/<run_id>.json`。stderr 中输出的 `run_id` 可用于查看状态：
 
 ```bash
-sre-agent status --run-id <run_id>
+sre status --run-id <run_id>
 ```
 
 对于 `cancelled`、`timed_out` 或 `failed` 的 run，可以恢复同一个 run：
 
 ```bash
-sre-agent resume --run-id <run_id> --task-timeout 2m
+sre resume --run-id <run_id> --task-timeout 2m
 ```
 
 若 run 仍为 `running`，先确认原进程已经停止，再明确确认恢复：
 
 ```bash
-sre-agent resume --run-id <run_id> --resume-running
+sre resume --run-id <run_id> --resume-running
 ```
 
 未知结果的 `smoke_run` 不允许自动恢复，因为该合成事务可能已经产生写入；详见
@@ -70,7 +70,7 @@ sre-agent resume --run-id <run_id> --resume-running
 ## 依赖连通性检查
 
 ```bash
-sre-agent diagnose \
+sre diagnose \
   --config configs/config.example.yaml \
   --mock-scenario dependency-check \
   --goal "检查 chat_proj 的 PostgreSQL 和 Redis 是否可连接"
@@ -85,7 +85,7 @@ sre-agent diagnose \
 ## WebSocket 连接失败
 
 ```bash
-sre-agent diagnose \
+sre diagnose \
   --config configs/config.example.yaml \
   --mock-scenario websocket \
   --goal "诊断 chat_proj WebSocket 为什么连接失败"

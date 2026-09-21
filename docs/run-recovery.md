@@ -34,7 +34,7 @@ agent:
 ```
 
 ```bash
-sre-agent diagnose --goal "检查登录接口" --task-timeout 2m
+sre diagnose --goal "检查登录接口" --task-timeout 2m
 ```
 
 总预算到期会保存 `timed_out` 以及 `error_class: deadline_exceeded`。`llm_timeout`
@@ -52,7 +52,7 @@ sre-agent diagnose --goal "检查登录接口" --task-timeout 2m
 停止后才可显式使用：
 
 ```bash
-sre-agent resume --run-id <run_id> --resume-running
+sre resume --run-id <run_id> --resume-running
 ```
 
 恢复前会将旧的 `running` 调用原子标记为 `unknown`。LLM 调用和只读探测的未知结果

@@ -47,7 +47,7 @@ memories/
 超过五分钟的陈旧锁会回收。若索引更新中断或失败，已保存的 `.runs` 不会丢失；随后可执行：
 
 ```bash
-go run ./cmd/sre-agent memory rebuild
+sre memory rebuild
 ```
 
 它只从可验证的 rollout summary 重建三个索引文件，不扫描或修改 `.runs`。同一 run
@@ -82,7 +82,7 @@ targets:
 服务和环境：
 
 ```bash
-go run ./cmd/sre-agent memory collect \
+sre memory collect \
   --run-id <legacy_run_id> \
   --run-dir .runs \
   --config configs/config.yaml
@@ -92,25 +92,25 @@ go run ./cmd/sre-agent memory collect \
 
 ```bash
 # JSON 写到 stdout，便于脚本使用；按当前配置默认服务/环境查询。
-go run ./cmd/sre-agent memory search --goal "Redis 连接超时" \
+sre memory search --goal "Redis 连接超时" \
   --config configs/config.yaml
 
 # 显式范围查询。
-go run ./cmd/sre-agent memory search --service go-chat --environment staging \
+sre memory search --service go-chat --environment staging \
   --goal "PostgreSQL 认证失败"
 
 # 从已有 run 生成或刷新复盘与索引。
-go run ./cmd/sre-agent memory collect --run-id <run_id>
+sre memory collect --run-id <run_id>
 
 # 排除已不适用的历史材料；原始 run 保留。
-go run ./cmd/sre-agent memory invalidate --run-id <run_id> --reason "实例已迁移"
+sre memory invalidate --run-id <run_id> --reason "实例已迁移"
 
 # 只允许降低或维持来源结论强度，不能升级为 identified。
-go run ./cmd/sre-agent memory correct --run-id <run_id> \
+sre memory correct --run-id <run_id> \
   --conclusion-status undetermined --note "缺少当前实例身份核对"
 
 # 逻辑删除：保留 tombstone、rollout 与原始 run 供审计，不再参与检索。
-go run ./cmd/sre-agent memory delete --run-id <run_id> --reason "不再适用"
+sre memory delete --run-id <run_id> --reason "不再适用"
 ```
 
 `invalidate` 和 `delete` 都不会物理删除 `.runs` 或 rollout 文件；它们从 `MEMORY.md`
@@ -126,13 +126,13 @@ go run ./cmd/sre-agent memory delete --run-id <run_id> --reason "不再适用"
 确认可以丢弃人工编辑后，索引文件可显式覆盖：
 
 ```bash
-go run ./cmd/sre-agent memory rebuild --overwrite-generated
+sre memory rebuild --overwrite-generated
 ```
 
 若被改动的是单次 rollout summary，必须从其原始 run 显式重建：
 
 ```bash
-go run ./cmd/sre-agent memory collect --run-id <run_id> --overwrite-generated
+sre memory collect --run-id <run_id> --overwrite-generated
 ```
 
 后一个命令会以 `.runs/<run_id>.json` 的当前事实替换该复盘，并重建全部索引；无法验证的

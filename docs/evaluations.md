@@ -17,7 +17,7 @@
 入口：
 
 ```bash
-sre-agent eval mock
+sre eval mock
 ```
 
 该命令应执行全部固定场景，将每个场景标记为 `passed` 或 `failed`，
@@ -29,10 +29,10 @@ sre-agent eval mock
 
 ```bash
 # 默认只记录 skipped，绝不发起模型请求。
-sre-agent eval model
+sre eval model
 
 # 只有明确授权后才允许读取配置并调用真实模型。
-sre-agent eval model --execute-real-model
+sre eval model --execute-real-model
 ```
 
 没有 `--execute-real-model` 时，结果必须是 `skipped`，并说明“未授权
@@ -85,15 +85,15 @@ URL、方法、日志路径和工具都会被拒绝。`--config` 仅用于读取
 ```bash
 go test ./...
 go vet ./...
-sre-agent eval mock
-sre-agent eval model
+sre eval mock
+sre eval model
 ```
 
 最后一条默认应显示 `skipped`，不能被报告为真实模型评测通过。仅在
 操作者明确决定承担真实调用后，才额外执行：
 
 ```bash
-sre-agent eval model --execute-real-model
+sre eval model --execute-real-model
 ```
 
 真实模型命令没有实际执行时，不应在验收记录中填写通过。

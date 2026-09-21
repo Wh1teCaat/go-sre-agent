@@ -8,10 +8,12 @@
 # 环境变量：
 #   CHAT_DIR  go-chat 目录，默认 /home/y2/project/go-chat
 #   AGENT_DIR agent 目录，默认为脚本所在仓库根目录
+#   SRE_BIN   sre 可执行文件，默认 sre；请先按 README 构建或安装
 set -euo pipefail
 
 CHAT_DIR="${CHAT_DIR:-/home/y2/project/go-chat}"
 AGENT_DIR="${AGENT_DIR:-$(cd "$(dirname "$0")/.." && pwd)}"
+SRE_BIN="${SRE_BIN:-sre}"
 # 报告与运行状态保留在 .runs 下，失败后可直接用 resume 继续未完成的 run。
 WORK_DIR="${WORK_DIR:-$AGENT_DIR/.runs/fault-injection}"
 LLM_TIMEOUT="${LLM_TIMEOUT:-60s}"
@@ -19,7 +21,7 @@ mkdir -p "$WORK_DIR"
 
 run_agent() {
   local goal="$1" report="$2"
-  (cd "$AGENT_DIR" && go run ./cmd/sre-agent diagnose \
+  (cd "$AGENT_DIR" && "$SRE_BIN" diagnose \
     --config configs/config.yaml \
     --max-steps 10 \
     --llm-timeout "$LLM_TIMEOUT" \

@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -106,6 +107,39 @@ func (s *Store) Load(sessionID string) (State, error) {
 		return State{}, fmt.Errorf("invalid session state: %w", err)
 	}
 	return state, nil
+}
+
+// List 读取会话根目录下全部有效 session，并按最近更新时间倒序返回。空或尚未创建的
+// 根目录返回空列表；无法验证的会话文件会返回错误，避免交互切换到不完整的上下文。
+func (s *Store) List() ([]State, error) {
+	if s == nil {
+		return nil, fmt.Errorf("session store is nil")
+	}
+	entries, err := os.ReadDir(s.dir)
+	if os.IsNotExist(err) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("read session directory: %w", err)
+	}
+	sessions := make([]State, 0, len(entries))
+	for _, entry := range entries {
+		if !entry.IsDir() || !safeID(entry.Name()) {
+			continue
+		}
+		state, err := s.Load(entry.Name())
+		if err != nil {
+			return nil, err
+		}
+		sessions = append(sessions, state)
+	}
+	sort.Slice(sessions, func(left, right int) bool {
+		if !sessions[left].UpdatedAt.Equal(sessions[right].UpdatedAt) {
+			return sessions[left].UpdatedAt.After(sessions[right].UpdatedAt)
+		}
+		return sessions[left].SessionID > sessions[right].SessionID
+	})
+	return sessions, nil
 }
 
 // SaveMemory 原子替换 sessionID 对应的生成 Markdown 记忆；内容会在持久化边界再次

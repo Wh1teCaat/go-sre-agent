@@ -24,7 +24,7 @@
 `run_id` 与 `session_id`：
 
 ```bash
-go run ./cmd/sre-agent diagnose \
+sre diagnose \
   --mock-scenario skeleton \
   --goal "检查登录接口"
 ```
@@ -32,7 +32,7 @@ go run ./cmd/sre-agent diagnose \
 继续同一问题时，使用前一次输出的 `session_id` 启动**新的 run**：
 
 ```bash
-go run ./cmd/sre-agent diagnose \
+sre diagnose \
   --session-id <session_id> \
   --goal "复查登录接口" \
   --environment local
@@ -42,14 +42,14 @@ go run ./cmd/sre-agent diagnose \
 加载同一会话的记忆。旧 run 没有 `session_id` 也仍可恢复，只是不附加会话记忆。
 
 ```bash
-go run ./cmd/sre-agent resume --run-id <run_id> --environment local
+sre resume --run-id <run_id> --environment local
 ```
 
 默认根目录来自 `paths.session_dir`（默认 `.sessions`），环境标签来自
 `targets.environment`（默认 `local`）。也可用 CLI 覆盖：
 
 ```bash
-go run ./cmd/sre-agent diagnose \
+sre diagnose \
   --session-dir /secure/runtime/sessions \
   --environment staging \
   --mock-scenario skeleton \
@@ -80,7 +80,7 @@ trace 证据支撑。
 修改，可在下一次诊断或恢复时传入：
 
 ```bash
-go run ./cmd/sre-agent diagnose \
+sre diagnose \
   --session-id <session_id> \
   --overwrite-session-memory \
   --goal "继续排查"

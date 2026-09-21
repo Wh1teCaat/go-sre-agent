@@ -31,6 +31,12 @@ func prepareNewDiagnosisSession(opts diagnoseOptions, startedAt time.Time) (diag
 		opts.NewSession = true
 		return opts, nil
 	}
+	if opts.NewSession {
+		// 交互入口预先分配会话 ID，以便在首次诊断前展示稳定上下文；会话仍只在
+		// run 与 session memory 成功持久化后落盘，避免留下没有排障目标的空会话。
+		opts.SessionID = sessionID
+		return opts, nil
+	}
 
 	state, err := sessionstore.NewStore(opts.SessionDir).Load(sessionID)
 	if err != nil {
@@ -111,6 +117,9 @@ func updateSessionForRun(result diagnoseResult) error {
 	}
 	if state.Environment != result.Environment {
 		return fmt.Errorf("session %q belongs to environment %q, not %q", state.SessionID, state.Environment, result.Environment)
+	}
+	if len(state.RunIDs) == 0 {
+		state.Goal = result.State.Goal
 	}
 	if state.MemoryDigest != "" {
 		currentMemory, err := store.LoadMemory(state.SessionID)

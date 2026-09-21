@@ -67,7 +67,7 @@ checkpoint，然后按 `max_parallel_tools` 调度。worker 只执行工具并�
 安全地将报告重定向给文件或下游程序：
 
 ```bash
-go run ./cmd/sre-agent diagnose \
+sre diagnose \
   --mock-scenario dependency-check \
   --goal "检查依赖状态" \
   --max-parallel-tools 2 \

@@ -202,3 +202,30 @@ func TestStoreOmitsFinishedAtForInFlightCall(t *testing.T) {
 		t.Fatalf("in-flight JSON should omit unfinished timestamp:\n%s", data)
 	}
 }
+
+// TestStoreListReturnsNewestRunsFirst 验证交互恢复列表按最近持久化时间稳定排序，并忽略无关文件。
+func TestStoreListReturnsNewestRunsFirst(t *testing.T) {
+	dir := t.TempDir()
+	store := NewStore(dir)
+	for _, state := range []State{
+		{RunID: "run_old", Goal: "old", Status: StatusFailed, CreatedAt: time.Unix(1, 0).UTC(), UpdatedAt: time.Unix(2, 0).UTC()},
+		{RunID: "run_new", Goal: "new", Status: StatusCancelled, CreatedAt: time.Unix(3, 0).UTC(), UpdatedAt: time.Unix(4, 0).UTC()},
+	} {
+		if err := store.Save(state); err != nil {
+			t.Fatalf("save %s: %v", state.RunID, err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(dir, "readme.txt"), []byte("ignored"), 0o600); err != nil {
+		t.Fatalf("write unrelated file: %v", err)
+	}
+	runs, err := store.List()
+	if err != nil {
+		t.Fatalf("list runs: %v", err)
+	}
+	if len(runs) != 2 || runs[0].RunID != "run_new" || runs[1].RunID != "run_old" {
+		t.Fatalf("listed runs = %#v", runs)
+	}
+	if empty, err := NewStore(filepath.Join(dir, "not-created")).List(); err != nil || len(empty) != 0 {
+		t.Fatalf("missing directory list = %#v / %v", empty, err)
+	}
+}

@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
-	"os"
+	"io"
 	"strings"
 	"time"
 
@@ -42,63 +42,70 @@ type modelEvaluationOptions struct {
 
 // runEvalCommand 分派离线 mock 套件与需显式放行的真实模型评测。后者不会由
 // diagnose、普通测试或未带授权参数的 `eval model` 调用触发。
-func runEvalCommand(args []string) {
+func runEvalCommand(args []string, stdout, stderr io.Writer) int {
 	if len(args) == 0 {
-		printUsageAndExit()
+		printUsage(stderr)
+		return 2
 	}
 
 	switch args[0] {
 	case "mock":
-		runMockEvaluationCommand(args[1:])
+		return runMockEvaluationCommand(args[1:], stdout, stderr)
 	case "model":
-		runModelEvaluationCommand(args[1:])
+		return runModelEvaluationCommand(args[1:], stdout, stderr)
 	default:
-		printUsageAndExit()
+		fmt.Fprintf(stderr, "unknown eval command %q\n", args[0])
+		printUsage(stderr)
+		return 2
 	}
 }
 
 // runMockEvaluationCommand 解析 mock 评测参数，将 JSON 结果写入 stdout，并将
 // 运行错误报告到 stderr。
-func runMockEvaluationCommand(args []string) {
+func runMockEvaluationCommand(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("eval mock", flag.ContinueOnError)
-	fs.SetOutput(os.Stderr)
+	fs.SetOutput(io.Discard)
 	scenarioID := fs.String("scenario", "all", "fixed scenario id, or all")
 	resultsDir := fs.String("results-dir", defaultEvaluationResultsDir, "evaluation result directory")
 	if err := fs.Parse(args); err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		os.Exit(2)
+		fmt.Fprintln(stderr, err)
+		return 2
 	}
 	if err := rejectUnexpectedEvalArgs(fs); err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		os.Exit(2)
+		fmt.Fprintln(stderr, err)
+		return 2
 	}
 
 	results, err := runMockEvaluations(context.Background(), *scenarioID, *resultsDir)
 	if len(results) > 0 {
-		outputEvaluationResults(os.Stdout, evaluation.ModeMock, results)
+		if outputErr := outputEvaluationResults(stdout, evaluation.ModeMock, results); outputErr != nil {
+			fmt.Fprintln(stderr, outputErr)
+			return 1
+		}
 	}
 	if err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		os.Exit(1)
+		fmt.Fprintln(stderr, err)
+		return 1
 	}
+	return 0
 }
 
 // runModelEvaluationCommand 解析真实模型的显式放行参数后再委派评测，并将机器
 // 可读结果保持在 stdout。
-func runModelEvaluationCommand(args []string) {
+func runModelEvaluationCommand(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("eval model", flag.ContinueOnError)
-	fs.SetOutput(os.Stderr)
+	fs.SetOutput(io.Discard)
 	scenarioID := fs.String("scenario", "login-500", "fixed scenario id")
 	configPath := fs.String("config", "", "config file path used to select the evaluation skill")
 	resultsDir := fs.String("results-dir", defaultEvaluationResultsDir, "evaluation result directory")
 	executeRealModel := fs.Bool("execute-real-model", false, "authorize a real model request that may incur cost")
 	if err := fs.Parse(args); err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		os.Exit(2)
+		fmt.Fprintln(stderr, err)
+		return 2
 	}
 	if err := rejectUnexpectedEvalArgs(fs); err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		os.Exit(2)
+		fmt.Fprintln(stderr, err)
+		return 2
 	}
 
 	result, err := runModelEvaluation(context.Background(), modelEvaluationOptions{
@@ -108,12 +115,16 @@ func runModelEvaluationCommand(args []string) {
 		ExecuteRealModel: *executeRealModel,
 	})
 	if result.Result.ID != "" {
-		outputEvaluationResults(os.Stdout, evaluation.ModeReal, []storedEvaluation{result})
+		if outputErr := outputEvaluationResults(stdout, evaluation.ModeReal, []storedEvaluation{result}); outputErr != nil {
+			fmt.Fprintln(stderr, outputErr)
+			return 1
+		}
 	}
 	if err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		os.Exit(1)
+		fmt.Fprintln(stderr, err)
+		return 1
 	}
+	return 0
 }
 
 // runMockEvaluations 只运行进程内工具样本和进程内 mock provider；它刻意不加载
@@ -521,7 +532,7 @@ func rejectUnexpectedEvalArgs(fs *flag.FlagSet) error {
 
 // outputEvaluationResults 输出一个 JSON 文档，并从各已持久化或已尝试的结果推导
 // 总体状态。
-func outputEvaluationResults(writer *os.File, mode evaluation.Mode, results []storedEvaluation) {
+func outputEvaluationResults(writer io.Writer, mode evaluation.Mode, results []storedEvaluation) error {
 	status := evaluation.StatusPassed
 	for _, result := range results {
 		if result.Result.Status == evaluation.StatusFailed {
@@ -535,8 +546,9 @@ func outputEvaluationResults(writer *os.File, mode evaluation.Mode, results []st
 	encoder := json.NewEncoder(writer)
 	encoder.SetIndent("", "  ")
 	if err := encoder.Encode(evaluationOutput{Mode: mode, Status: status, Results: results}); err != nil {
-		fmt.Fprintln(os.Stderr, "encode evaluation output:", err)
+		return fmt.Errorf("encode evaluation output: %w", err)
 	}
+	return nil
 }
 
 // uniqueStrings 保留首次出现的失败消息，同时移除重复项。

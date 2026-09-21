@@ -151,6 +151,34 @@ func TestNewIDIsSafeAndUnique(t *testing.T) {
 	}
 }
 
+// TestStoreListReturnsNewestSessionsFirst 验证交互会话选择只读取有效目录并按更新时间排序。
+func TestStoreListReturnsNewestSessionsFirst(t *testing.T) {
+	dir := t.TempDir()
+	store := NewStore(dir)
+	old := testState("session_old")
+	old.UpdatedAt = time.Unix(20, 0).UTC()
+	newest := testState("session_new")
+	newest.UpdatedAt = time.Unix(30, 0).UTC()
+	for _, state := range []State{old, newest} {
+		if err := store.Save(state); err != nil {
+			t.Fatalf("save %s: %v", state.SessionID, err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(dir, "ignored.txt"), []byte("ignored"), 0o600); err != nil {
+		t.Fatalf("write unrelated file: %v", err)
+	}
+	sessions, err := store.List()
+	if err != nil {
+		t.Fatalf("list sessions: %v", err)
+	}
+	if len(sessions) != 2 || sessions[0].SessionID != "session_new" || sessions[1].SessionID != "session_old" {
+		t.Fatalf("listed sessions = %#v", sessions)
+	}
+	if empty, err := NewStore(filepath.Join(dir, "not-created")).List(); err != nil || len(empty) != 0 {
+		t.Fatalf("missing directory list = %#v / %v", empty, err)
+	}
+}
+
 func testState(sessionID string) State {
 	return State{
 		SessionID:   sessionID,
