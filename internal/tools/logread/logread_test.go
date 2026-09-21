@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestLogReadReturnsLatestLinesFromAllowedPath(t *testing.T) {
@@ -141,6 +142,52 @@ func TestLogReadRedactsSensitiveLogLines(t *testing.T) {
 	}
 	if count := strings.Count(lines[0], "[REDACTED]"); count != 3 {
 		t.Fatalf("redaction count = %d, want 3: %s", count, lines[0])
+	}
+}
+
+func TestLogReadFiltersLinesByTimeWindow(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "app.log")
+	recent := time.Now().Format(time.RFC3339)
+	recentTab := time.Now().UTC().Format("2006-01-02T15:04:05.000Z")
+	writeLog(t, path,
+		"2020-01-01T10:00:00+08:00 ERROR old failure\n"+
+			recent+" ERROR recent failure\n"+
+			recentTab+"\twarn\tHTTPBindError\tERROR tab separated recent\n"+
+			"no timestamp ERROR line\n")
+
+	tool := New([]string{dir}, 1000)
+	observation, err := tool.Run(context.Background(), mustLogArgs(t, Args{
+		Path:        path,
+		Keyword:     "ERROR",
+		LastMinutes: 10,
+	}))
+	if err != nil {
+		t.Fatalf("run log read: %v", err)
+	}
+
+	lines := observation.Data["lines"].([]string)
+	if len(lines) != 2 || !strings.Contains(lines[0], "recent failure") || !strings.Contains(lines[1], "tab separated recent") {
+		t.Fatalf("lines = %#v, want the two recent lines", lines)
+	}
+	if !strings.Contains(observation.Summary, "since ") {
+		t.Fatalf("summary = %q, want since window", observation.Summary)
+	}
+
+	observation, err = tool.Run(context.Background(), mustLogArgs(t, Args{
+		Path:  path,
+		Since: "2019-01-01T00:00:00Z",
+	}))
+	if err != nil {
+		t.Fatalf("run log read with since: %v", err)
+	}
+	lines = observation.Data["lines"].([]string)
+	if len(lines) != 3 {
+		t.Fatalf("lines = %#v, want all timestamped lines", lines)
+	}
+
+	if _, err := tool.Run(context.Background(), mustLogArgs(t, Args{Path: path, Since: "not-a-time"})); err == nil {
+		t.Fatal("expected invalid since to fail")
 	}
 }
 

@@ -186,8 +186,41 @@ func serverURLWithHost(rawURL string, host string) string {
 	return parsed.String()
 }
 
+func TestHTTPCheckRepeatSamplesFlakyEndpoint(t *testing.T) {
+	calls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		if calls%2 == 0 {
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	tool := NewWithPolicy(64, nil, nil)
+	observation, err := tool.Run(context.Background(), mustArgs(t, Args{URL: server.URL, Repeat: 4}))
+	if err != nil {
+		t.Fatalf("run http check: %v", err)
+	}
+
+	if calls != 4 {
+		t.Fatalf("calls = %d, want 4", calls)
+	}
+	counts, ok := observation.Data["status_counts"].(map[string]int)
+	if !ok || counts["200"] != 2 || counts["500"] != 2 {
+		t.Fatalf("status_counts = %#v, want 200x2 and 500x2", observation.Data["status_counts"])
+	}
+	if !strings.Contains(observation.Summary, "sampled 4 times") || !strings.Contains(observation.Summary, "200x2, 500x2") {
+		t.Fatalf("summary = %q, want sampling summary", observation.Summary)
+	}
+	if observation.Data["attempts"] != 4 {
+		t.Fatalf("attempts = %#v, want 4", observation.Data["attempts"])
+	}
+}
+
 func TestHTTPCheckSchemaDescribesOptionalHeadersAndBody(t *testing.T) {
-	schema := Spec().Schema
+	schema := NewWithPolicy(0, nil, nil).Spec().Schema
 
 	if schema.Properties["headers"].Type != "object" {
 		t.Fatalf("headers schema = %#v, want object", schema.Properties["headers"])

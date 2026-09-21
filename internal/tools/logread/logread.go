@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/y2/go-sre-agent/internal/schema"
 	"github.com/y2/go-sre-agent/internal/tools"
@@ -16,11 +17,13 @@ import (
 const Name = "log_read"
 
 type Args struct {
-	Path      string   `json:"path"`
-	Lines     int      `json:"lines,omitempty"`
-	Keyword   string   `json:"keyword,omitempty"`
-	Keywords  []string `json:"keywords,omitempty"`
-	RequestID string   `json:"request_id,omitempty"`
+	Path        string   `json:"path"`
+	Lines       int      `json:"lines,omitempty"`
+	Keyword     string   `json:"keyword,omitempty"`
+	Keywords    []string `json:"keywords,omitempty"`
+	RequestID   string   `json:"request_id,omitempty"`
+	Since       string   `json:"since,omitempty"`
+	LastMinutes int      `json:"last_minutes,omitempty"`
 }
 
 type Tool struct {
@@ -56,7 +59,23 @@ func New(allowedDirs []string, maxLines int) *Tool {
 	}
 }
 
-func (t *Tool) Spec() tools.ToolSpec { return Spec() }
+func (t *Tool) Spec() tools.ToolSpec {
+	return tools.ToolSpec{
+		Name:        Name,
+		Description: "Read the latest lines from an allowed log file, optionally filtered by exact request_id and keywords.",
+		Schema: tools.ToolSchema{
+			Properties: map[string]tools.ArgSpec{
+				"path":       {Type: "string", Required: true, Description: "Log file path under an allowed directory."},
+				"lines":      {Type: "number", Description: "Number of latest lines to read."},
+				"keyword":    {Type: "string", Description: "Optional keyword filter."},
+				"keywords":     {Type: "array", Description: "Optional keyword filters; a line matches when it contains any keyword."},
+				"request_id":   {Type: "string", Description: "Optional exact request_id from structured JSON log fields; combined with keyword filters."},
+				"since":        {Type: "string", Description: "Optional RFC3339 timestamp; only lines whose leading timestamp is at or after it are returned."},
+				"last_minutes": {Type: "number", Description: "Optional relative window; only lines from the last N minutes are returned."},
+			},
+		},
+	}
+}
 
 func (t *Tool) Run(ctx context.Context, rawArgs json.RawMessage) (schema.Observation, error) {
 	select {
@@ -84,7 +103,11 @@ func (t *Tool) Run(ctx context.Context, rawArgs json.RawMessage) (schema.Observa
 
 	keywords := normalizedKeywords(args.Keyword, args.Keywords)
 	requestID := strings.TrimSpace(args.RequestID)
-	lines, err := readLatestLines(ctx, path, limit, keywords, requestID)
+	cutoff, err := timeCutoff(args.Since, args.LastMinutes, time.Now())
+	if err != nil {
+		return schema.Observation{}, err
+	}
+	lines, err := readLatestLines(ctx, path, limit, keywords, requestID, cutoff)
 	if err != nil {
 		return schema.Observation{}, err
 	}
@@ -100,18 +123,43 @@ func (t *Tool) Run(ctx context.Context, rawArgs json.RawMessage) (schema.Observa
 	if requestID != "" {
 		summary = fmt.Sprintf("read %d log lines for request_id %q from %s", len(lines), requestID, path)
 	}
+	data := map[string]any{
+		"path":       path,
+		"lines":      lines,
+		"lines_read": len(lines),
+		"keywords":   keywords,
+		"request_id": requestID,
+	}
+	if !cutoff.IsZero() {
+		since := cutoff.Format(time.RFC3339)
+		summary += fmt.Sprintf(" since %s", since)
+		data["since"] = since
+	}
 
 	return schema.Observation{
 		Tool:    Name,
 		Summary: summary,
-		Data: map[string]any{
-			"path":       path,
-			"lines":      lines,
-			"lines_read": len(lines),
-			"keywords":   keywords,
-			"request_id": requestID,
-		},
+		Data:    data,
 	}, nil
+}
+
+// timeCutoff 合并绝对和相对时间窗口；同时提供时取更晚者（更窄窗口）。
+func timeCutoff(since string, lastMinutes int, now time.Time) (time.Time, error) {
+	var cutoff time.Time
+	if since = strings.TrimSpace(since); since != "" {
+		parsed, err := time.Parse(time.RFC3339, since)
+		if err != nil {
+			return time.Time{}, fmt.Errorf("parse since as RFC3339: %w", err)
+		}
+		cutoff = parsed
+	}
+	if lastMinutes > 0 {
+		relative := now.Add(-time.Duration(lastMinutes) * time.Minute)
+		if relative.After(cutoff) {
+			cutoff = relative
+		}
+	}
+	return cutoff, nil
 }
 
 func (t *Tool) allowedPath(path string) (string, error) {
@@ -151,7 +199,7 @@ func isInsideDir(path string, dir string) bool {
 }
 
 // readLatestLines 扫描文件时只保留最后 limit 条匹配行，避免大日志占满内存。
-func readLatestLines(ctx context.Context, path string, limit int, keywords []string, requestID string) ([]string, error) {
+func readLatestLines(ctx context.Context, path string, limit int, keywords []string, requestID string, cutoff time.Time) ([]string, error) {
 	file, err := os.Open(path)
 	if err != nil {
 		return nil, fmt.Errorf("open log file: %w", err)
@@ -170,7 +218,7 @@ func readLatestLines(ctx context.Context, path string, limit int, keywords []str
 		default:
 		}
 		line := scanner.Text()
-		if !matchesRequestID(line, requestID) || !matchesAnyKeyword(line, keywords) {
+		if !matchesRequestID(line, requestID) || !matchesAnyKeyword(line, keywords) || !inTimeWindow(line, cutoff) {
 			continue
 		}
 		ring[matched%limit] = line
@@ -225,6 +273,25 @@ func normalizedKeywords(keyword string, keywords []string) []string {
 	return result
 }
 
+// inTimeWindow 用行首的 RFC3339 时间戳做窗口过滤。
+// 启用过滤后，无法解析时间的行视为窗口外：时间过滤的语义是"只要这段时间的日志"。
+func inTimeWindow(line string, cutoff time.Time) bool {
+	if cutoff.IsZero() {
+		return true
+	}
+	line = strings.TrimSpace(line)
+	// 第一个字段以空格或 tab 结束，兼容 zap 等 tab 分隔的结构化日志。
+	field := line
+	if end := strings.IndexAny(line, " \t"); end >= 0 {
+		field = line[:end]
+	}
+	timestamp, err := time.Parse(time.RFC3339, field)
+	if err != nil {
+		return false
+	}
+	return !timestamp.Before(cutoff)
+}
+
 func matchesAnyKeyword(line string, keywords []string) bool {
 	if len(keywords) == 0 {
 		return true
@@ -235,20 +302,4 @@ func matchesAnyKeyword(line string, keywords []string) bool {
 		}
 	}
 	return false
-}
-
-func Spec() tools.ToolSpec {
-	return tools.ToolSpec{
-		Name:        Name,
-		Description: "Read the latest lines from an allowed log file, optionally filtered by exact request_id and keywords.",
-		Schema: tools.ToolSchema{
-			Properties: map[string]tools.ArgSpec{
-				"path":       {Type: "string", Required: true, Description: "Log file path under an allowed directory."},
-				"lines":      {Type: "number", Description: "Number of latest lines to read."},
-				"keyword":    {Type: "string", Description: "Optional keyword filter."},
-				"keywords":   {Type: "array", Description: "Optional keyword filters; a line matches when it contains any keyword."},
-				"request_id": {Type: "string", Description: "Optional exact request_id from structured JSON log fields; combined with keyword filters."},
-			},
-		},
-	}
 }

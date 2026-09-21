@@ -10,9 +10,19 @@ type Evidence struct {
 	Summary string `json:"summary"`
 }
 
-// Diagnosis 是 final action 的业务内容：结论、证据引用和后续建议。
+// RootCause 是最终诊断对根因的显式声明。结论强度由结构化 status 表达：
+// identified 必须引用真实 trace 证据，证据不足时用 suspected/undetermined，
+// 而不是在自由文本里下断言。
+type RootCause struct {
+	Status    string     `json:"status"` // identified | suspected | undetermined
+	Statement string     `json:"statement,omitempty"`
+	Evidence  []Evidence `json:"evidence,omitempty"`
+}
+
+// Diagnosis 是 final action 的业务内容：结论、根因声明、证据引用和后续建议。
 type Diagnosis struct {
 	Summary         string         `json:"summary"`
+	RootCause       *RootCause     `json:"root_cause,omitempty"`
 	Evidence        []Evidence     `json:"evidence,omitempty"`
 	Coverage        []CoverageItem `json:"coverage,omitempty"`
 	Recommendations []string       `json:"recommendations,omitempty"`

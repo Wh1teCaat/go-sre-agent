@@ -8,6 +8,8 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -17,11 +19,15 @@ import (
 
 const Name = "http_check"
 
+// maxRepeat 限制单次 action 的采样上限，避免模型对目标服务放大请求量。
+const maxRepeat = 10
+
 type Args struct {
 	URL     string            `json:"url"`
 	Method  string            `json:"method,omitempty"`
 	Headers map[string]string `json:"headers,omitempty"`
 	Body    string            `json:"body,omitempty"`
+	Repeat  int               `json:"repeat,omitempty"`
 }
 
 type Tool struct {
@@ -48,7 +54,21 @@ func NewWithPolicy(maxBodyBytes int, allowedHosts []string, allowedPOSTURLs []st
 	}
 }
 
-func (t *Tool) Spec() tools.ToolSpec { return Spec() }
+func (t *Tool) Spec() tools.ToolSpec {
+	return tools.ToolSpec{
+		Name:        Name,
+		Description: "Request an HTTP endpoint and return status, latency, response request_id, and a body snippet. Put a user-specified reproduction request_id in the X-Request-ID header; use the returned request_id for later log correlation. GET/HEAD are read-only; POST is limited to configured diagnostic URLs.",
+		Schema: tools.ToolSchema{
+			Properties: map[string]tools.ArgSpec{
+				"url":     {Type: "string", Required: true, Description: "HTTP URL to request."},
+				"method":  {Type: "string", Description: "HTTP method, defaults to GET."},
+				"headers": {Type: "object", Description: "Optional HTTP headers."},
+				"body":    {Type: "string", Description: "Optional request body."},
+				"repeat":  {Type: "number", Description: "Optional attempt count (2-10) to sample an intermittently failing endpoint; reports per-status counts and the latency range."},
+			},
+		},
+	}
+}
 
 func (t *Tool) Run(ctx context.Context, rawArgs json.RawMessage) (schema.Observation, error) {
 	var args Args
@@ -81,48 +101,109 @@ func (t *Tool) Run(ctx context.Context, rawArgs json.RawMessage) (schema.Observa
 		return schema.Observation{}, err
 	}
 
-	request, err := http.NewRequestWithContext(ctx, method, args.URL, bytes.NewBufferString(args.Body))
-	if err != nil {
-		return schema.Observation{}, fmt.Errorf("build request: %w", err)
+	repeat := args.Repeat
+	if repeat <= 0 {
+		repeat = 1
 	}
-	for key, value := range args.Headers {
-		request.Header.Set(key, value)
+	if repeat > maxRepeat {
+		repeat = maxRepeat
 	}
 
-	startedAt := time.Now()
-	response, err := t.requestClient().Do(request)
-	latency := time.Since(startedAt)
-	if err != nil {
-		return schema.Observation{}, fmt.Errorf("execute request: %w", err)
-	}
-	defer response.Body.Close()
+	client := t.requestClient()
+	statusCounts := map[string]int{}
+	var latencies []int64
+	transportErrors := 0
+	var lastErr error
+	lastStatus := 0
+	var lastLatencyMS int64
+	bodySnippet := ""
+	requestID := ""
+	for attempt := 0; attempt < repeat; attempt++ {
+		request, err := http.NewRequestWithContext(ctx, method, args.URL, bytes.NewBufferString(args.Body))
+		if err != nil {
+			return schema.Observation{}, fmt.Errorf("build request: %w", err)
+		}
+		for key, value := range args.Headers {
+			request.Header.Set(key, value)
+		}
 
-	body, err := io.ReadAll(io.LimitReader(response.Body, int64(t.maxBodyBytes)))
-	if err != nil {
-		return schema.Observation{}, fmt.Errorf("read response body: %w", err)
+		startedAt := time.Now()
+		response, err := client.Do(request)
+		latencyMS := time.Since(startedAt).Milliseconds()
+		if latencyMS < 0 {
+			latencyMS = 0
+		}
+		if err != nil {
+			// 偶发故障的失败尝试也是采样数据；只有全部失败才让整个工具报错。
+			transportErrors++
+			lastErr = fmt.Errorf("execute request: %w", err)
+			statusCounts["error"]++
+			continue
+		}
+		body, err := io.ReadAll(io.LimitReader(response.Body, int64(t.maxBodyBytes)))
+		response.Body.Close()
+		if err != nil {
+			transportErrors++
+			lastErr = fmt.Errorf("read response body: %w", err)
+			statusCounts["error"]++
+			continue
+		}
+		// body 只保留有限片段，并在进入 observation 前脱敏；
+		// 该 observation 后续会进入 LLM 上下文和 Markdown 报告。
+		bodySnippet = tools.RedactSensitive(string(body))
+		requestID = strings.TrimSpace(response.Header.Get("X-Request-ID"))
+		lastStatus = response.StatusCode
+		lastLatencyMS = latencyMS
+		statusCounts[strconv.Itoa(response.StatusCode)]++
+		latencies = append(latencies, latencyMS)
 	}
-	// body 只保留有限片段，并在进入 observation 前脱敏；
-	// 该 observation 后续会进入 LLM 上下文和 Markdown 报告。
-	bodySnippet := tools.RedactSensitive(string(body))
+	if len(latencies) == 0 {
+		return schema.Observation{}, lastErr
+	}
 
-	latencyMS := latency.Milliseconds()
-	if latencyMS < 0 {
-		latencyMS = 0
+	minLatency, maxLatency := latencies[0], latencies[0]
+	for _, latency := range latencies[1:] {
+		minLatency = min(minLatency, latency)
+		maxLatency = max(maxLatency, latency)
 	}
-	summary := fmt.Sprintf("%s %s returned %d in %dms", method, args.URL, response.StatusCode, latencyMS)
+
+	summary := fmt.Sprintf("%s %s returned %d in %dms", method, args.URL, lastStatus, lastLatencyMS)
+	data := map[string]any{
+		"url":          args.URL,
+		"method":       method,
+		"status":       lastStatus,
+		"latency_ms":   lastLatencyMS,
+		"body_snippet": bodySnippet,
+		"request_id":   requestID,
+	}
+	if repeat > 1 {
+		summary = fmt.Sprintf("%s %s sampled %d times: %s; latency %d-%dms", method, args.URL, repeat, formatStatusCounts(statusCounts), minLatency, maxLatency)
+		data["attempts"] = repeat
+		data["status_counts"] = statusCounts
+		data["transport_errors"] = transportErrors
+		data["latency_ms_min"] = minLatency
+		data["latency_ms_max"] = maxLatency
+	}
 
 	return schema.Observation{
 		Tool:    Name,
 		Summary: summary,
-		Data: map[string]any{
-			"url":          args.URL,
-			"method":       method,
-			"status":       response.StatusCode,
-			"latency_ms":   latencyMS,
-			"body_snippet": bodySnippet,
-			"request_id":   strings.TrimSpace(response.Header.Get("X-Request-ID")),
-		},
+		Data:    data,
 	}, nil
+}
+
+// formatStatusCounts 输出确定性排序的状态分布，例如 "200x4, 500x1, errorx1"。
+func formatStatusCounts(counts map[string]int) string {
+	keys := make([]string, 0, len(counts))
+	for key := range counts {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	parts := make([]string, 0, len(keys))
+	for _, key := range keys {
+		parts = append(parts, fmt.Sprintf("%sx%d", key, counts[key]))
+	}
+	return strings.Join(parts, ", ")
 }
 
 func (t *Tool) validateMethod(method string, target *url.URL) error {
@@ -160,7 +241,6 @@ func normalizeURL(rawURL string) (string, error) {
 // 直接修改共享 client.CheckRedirect 会让并发诊断相互影响。
 func (t *Tool) requestClient() *http.Client {
 	client := *http.DefaultClient
-	previous := client.CheckRedirect
 	client.CheckRedirect = func(request *http.Request, via []*http.Request) error {
 		if request.URL.Scheme != "http" && request.URL.Scheme != "https" {
 			return fmt.Errorf("redirect url scheme %q is not supported", request.URL.Scheme)
@@ -171,28 +251,10 @@ func (t *Tool) requestClient() *http.Client {
 		if err := t.validateMethod(request.Method, request.URL); err != nil {
 			return err
 		}
-		if previous != nil {
-			return previous(request, via)
-		}
 		if len(via) >= 10 {
 			return fmt.Errorf("stopped after 10 redirects")
 		}
 		return nil
 	}
 	return &client
-}
-
-func Spec() tools.ToolSpec {
-	return tools.ToolSpec{
-		Name:        Name,
-		Description: "Request an HTTP endpoint and return status, latency, response request_id, and a body snippet. Put a user-specified reproduction request_id in the X-Request-ID header; use the returned request_id for later log correlation. GET/HEAD are read-only; POST is limited to configured diagnostic URLs.",
-		Schema: tools.ToolSchema{
-			Properties: map[string]tools.ArgSpec{
-				"url":     {Type: "string", Required: true, Description: "HTTP URL to request."},
-				"method":  {Type: "string", Description: "HTTP method, defaults to GET."},
-				"headers": {Type: "object", Description: "Optional HTTP headers."},
-				"body":    {Type: "string", Description: "Optional request body."},
-			},
-		},
-	}
 }

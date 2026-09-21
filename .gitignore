@@ -24,6 +24,9 @@ report.md
 reports/
 traces/
 .runs/
+.sessions/
+memories/
+evals/results/
 tmp/
 temp/
 
@@ -56,3 +59,4 @@ Thumbs.db
 *.swo
 .codex/
 .agents/
+REVIEW.local.md

@@ -296,7 +296,7 @@ func TestResumeDiagnosisRunContinuesPersistedRunWithExistingTrace(t *testing.T) 
 		if err := json.Unmarshal(body, &gotRequest); err != nil {
 			t.Fatalf("decode request: %v\n%s", err, body)
 		}
-		content := `{"type":"final","thought_summary":"existing trace is enough","final":{"summary":"resume completed","evidence":[{"step":1,"tool":"http_check","summary":"backend returned ok"}],"coverage":[{"plan_item_id":"backend","status":"done","evidence":[{"step":1,"tool":"http_check","summary":"backend returned ok"}]}]}}`
+		content := `{"type":"final","thought_summary":"existing trace is enough","final":{"summary":"resume completed","root_cause":{"status":"undetermined"},"evidence":[{"step":1,"tool":"http_check","summary":"backend returned ok"}],"coverage":[{"plan_item_id":"backend","status":"done","evidence":[{"step":1,"tool":"http_check","summary":"backend returned ok"}]}]}}`
 		if strings.Contains(gotRequest.Messages[1].Content, `"mode": "plan"`) {
 			content = `{"plan":null}`
 		}
@@ -603,7 +603,7 @@ targets:
 		"target_context",
 		"backend_base_url",
 		"http://chat-proj.local:8080",
-		"login_url",
+		"allowed_post_urls",
 		"/v1/user/login",
 		"postgres_target",
 		"postgres_dsn_configured",
@@ -690,7 +690,7 @@ func TestRunDiagnoseRealProviderCanDriveToolLoop(t *testing.T) {
 		case 3:
 			content = `{"plan":null}`
 		case 4:
-			content = `{"type":"final","thought_summary":"backend evidence is enough","final":{"summary":"LLM tool loop complete","evidence":[{"step":1,"tool":"http_check","summary":"backend returned ok"}]}}`
+			content = `{"type":"final","thought_summary":"backend evidence is enough","final":{"summary":"LLM tool loop complete","root_cause":{"status":"undetermined"},"evidence":[{"step":1,"tool":"http_check","summary":"backend returned ok"}]}}`
 		default:
 			t.Fatalf("unexpected llm call %d", llmCalls)
 		}

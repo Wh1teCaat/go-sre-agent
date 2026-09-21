@@ -2,7 +2,7 @@
 
 本文用于在本地测试环境复现故障，并验证 Agent 是否能形成完整证据链。所有命令都假设：
 
-- `chat_proj` 位于 `/home/y2/project/chat_proj`。
+- `go-chat` 位于 `/home/y2/project/go-chat`（compose 服务：edge/gateway/logic/frontend/postgres/redis）。
 - Agent 位于 `/home/y2/project/go-sre-agent`。
 - 使用 `configs/config.yaml`，其中日志目录和 Docker 容器白名单已配置。
 - 只在可丢弃的本地数据库执行数据库故障场景。
@@ -10,10 +10,13 @@
 先启动服务并确认基线：
 
 ```bash
-cd /home/y2/project/chat_proj
+cd /home/y2/project/go-chat
 docker compose up -d
 docker compose ps
 ```
+
+注意：`docker compose start <service>` 会校验依赖（如 kafka）且无法修复失效的
+bind mount；恢复单个服务请使用 `docker compose up -d --no-deps <service>`。
 
 ## 场景一：后端容器退出
 
@@ -133,3 +136,15 @@ docker compose ps
 go run ./cmd/sre-agent status --config configs/config.yaml --run-id <run_id>
 go run ./cmd/sre-agent report --config configs/config.yaml --run-id <run_id>
 ```
+
+## 自动化回归
+
+`scripts/fault-injection.sh` 把上述场景脚本化：注入故障 → 运行诊断 → 断言报告包含
+对应工具证据和结构化 `## Root Cause` 段落 → 恢复服务。
+
+```bash
+scripts/fault-injection.sh              # 全部场景
+scripts/fault-injection.sh backend-down # 单个场景
+```
+
+`CHAT_DIR` 与 `AGENT_DIR` 环境变量可覆盖默认目录。

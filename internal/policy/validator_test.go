@@ -246,7 +246,8 @@ func TestValidatorRejectsDuplicateOrUnknownCoverageItems(t *testing.T) {
 func TestValidatorAllowsCoveredPlanItems(t *testing.T) {
 	validator := NewValidator(Config{})
 	diagnosis := &schema.Diagnosis{
-		Summary: "后端正常",
+		Summary:   "后端正常",
+		RootCause: &schema.RootCause{Status: "undetermined"},
 		Evidence: []schema.Evidence{
 			{Step: 1, Tool: "http_check"},
 		},
@@ -274,46 +275,75 @@ func TestValidatorAllowsCoveredPlanItems(t *testing.T) {
 	}
 }
 
-func TestValidatorRejectsClaimsBeyondGenericAuthAndHealthEvidence(t *testing.T) {
+func TestValidatorRequiresStructuredRootCause(t *testing.T) {
 	validator := NewValidator(Config{})
 	entries := []trace.Entry{
-		{Step: 1, ToolName: "log_read", Result: schema.Observation{Data: map[string]any{"lines": []string{`{"code":"wrong_password","error":"invalid email or password"}`}}}},
-		{Step: 2, ToolName: "http_check", Result: schema.Observation{Summary: "GET http://localhost:8080/health returned 401", Data: map[string]any{"status": 401}}},
-		{Step: 3, ToolName: "docker_inspect", Result: schema.Observation{Summary: "running=true exit_code=0 health=none"}},
-		{Step: 4, ToolName: "http_check", Result: schema.Observation{Error: "dial tcp 127.0.0.1:65534: connect: connection refused"}},
-		{Step: 5, ToolName: "postgres_check", Result: schema.Observation{Summary: "tables exist: users", Data: map[string]any{"checked_tables": []string{"users"}}}},
+		{Step: 1, ToolName: "log_read"},
+		{Step: 2, ToolName: "http_check"},
 	}
+	evidence := []schema.Evidence{{Step: 1, Tool: "log_read"}}
 
-	for name, summary := range map[string]string{
-		"credential root cause":       "两次请求根因表现一致，均为密码校验失败。",
-		"aggregate component health":  "所有核心组件运行正常，系统正常。",
-		"aggregate dependency health": "所有核心依赖状态正常。",
-		"auth is not a service fault": "/health 和 WebSocket 的 401 均为认证拦截，非服务故障。",
-		"postgres table structure":    "PostgreSQL 连通且 users 表结构正常。",
-		"transport cause":             "连接被拒绝，证明该端口无服务监听或网络不可达。",
-		"transport speculation":       "连接被拒绝，通常意味着无进程监听或防火墙拦截。",
+	for name, test := range map[string]struct {
+		rootCause *schema.RootCause
+		wantErr   string
+	}{
+		"missing root cause": {
+			rootCause: nil,
+			wantErr:   "requires root_cause",
+		},
+		"unsupported status": {
+			rootCause: &schema.RootCause{Status: "confirmed", Statement: "密码错误"},
+			wantErr:   `unsupported root cause status "confirmed"`,
+		},
+		"identified without evidence": {
+			rootCause: &schema.RootCause{Status: "identified", Statement: "密码错误"},
+			wantErr:   `root cause status "identified" requires evidence`,
+		},
+		"identified without statement": {
+			rootCause: &schema.RootCause{Status: "identified", Evidence: evidence},
+			wantErr:   "requires statement",
+		},
+		"suspected without statement": {
+			rootCause: &schema.RootCause{Status: "suspected"},
+			wantErr:   "requires statement",
+		},
+		"evidence outside trace": {
+			rootCause: &schema.RootCause{Status: "identified", Statement: "密码错误", Evidence: []schema.Evidence{{Step: 99, Tool: "log_read"}}},
+			wantErr:   "no matching trace entry",
+		},
+		"evidence outside final evidence": {
+			rootCause: &schema.RootCause{Status: "identified", Statement: "密码错误", Evidence: []schema.Evidence{{Step: 2, Tool: "http_check"}}},
+			wantErr:   "not present in final evidence",
+		},
 	} {
 		t.Run(name, func(t *testing.T) {
-			diagnosis := &schema.Diagnosis{Summary: summary, Evidence: []schema.Evidence{{Step: 1, Tool: "log_read"}}}
-			if err := validator.ValidateFinalEvidence(diagnosis, entries); err == nil {
-				t.Fatalf("summary %q passed semantic validation", summary)
+			diagnosis := &schema.Diagnosis{Summary: "结论", Evidence: evidence, RootCause: test.rootCause}
+			err := validator.ValidateFinalEvidence(diagnosis, entries)
+			if err == nil || !strings.Contains(err.Error(), test.wantErr) {
+				t.Fatalf("error = %v, want %q", err, test.wantErr)
 			}
 		})
 	}
 
-	diagnosis := &schema.Diagnosis{
-		Summary:  "两次请求现象相同，但无法确定根因是否相同；应用和容器健康状态未能验证。",
-		Evidence: []schema.Evidence{{Step: 1, Tool: "log_read"}},
-	}
-	if err := validator.ValidateFinalEvidence(diagnosis, entries); err != nil {
-		t.Fatalf("cautious summary rejected: %v", err)
+	for name, rootCause := range map[string]*schema.RootCause{
+		"undetermined": {Status: "undetermined"},
+		"suspected":    {Status: "suspected", Statement: "疑似凭证问题，但证据不足"},
+		"identified":   {Status: "identified", Statement: "日志证明请求命中密码校验失败分支", Evidence: evidence},
+	} {
+		t.Run("allows "+name, func(t *testing.T) {
+			diagnosis := &schema.Diagnosis{Summary: "结论", Evidence: evidence, RootCause: rootCause}
+			if err := validator.ValidateFinalEvidence(diagnosis, entries); err != nil {
+				t.Fatalf("validate root cause: %v", err)
+			}
+		})
 	}
 }
 
 func TestValidatorAllowsEvidenceToCoverComparisonPlanItem(t *testing.T) {
 	validator := NewValidator(Config{})
 	diagnosis := &schema.Diagnosis{
-		Summary: "历史请求与复现现象相同，但根因不能确定。",
+		Summary:   "历史请求与复现现象相同，但根因不能确定。",
+		RootCause: &schema.RootCause{Status: "undetermined"},
 		Evidence: []schema.Evidence{
 			{Step: 1, Tool: "log_read"},
 			{Step: 2, Tool: "http_check"},
@@ -373,9 +403,10 @@ func TestValidatorAllowsInsufficientCoverageAfterAttempt(t *testing.T) {
 	plan := schema.Plan{Items: []schema.PlanItem{{ID: "logs", Goal: "检查日志"}}}
 	evidence := schema.Evidence{Step: 1, Tool: "log_read"}
 	diagnosis := &schema.Diagnosis{
-		Summary:  "日志证据不足",
-		Evidence: []schema.Evidence{evidence},
-		Coverage: []schema.CoverageItem{{PlanItemID: "logs", Status: "insufficient", Evidence: []schema.Evidence{evidence}}},
+		Summary:   "日志证据不足",
+		RootCause: &schema.RootCause{Status: "undetermined"},
+		Evidence:  []schema.Evidence{evidence},
+		Coverage:  []schema.CoverageItem{{PlanItemID: "logs", Status: "insufficient", Evidence: []schema.Evidence{evidence}}},
 	}
 	entries := []trace.Entry{{Step: 1, PlanItemID: "logs", ToolName: "log_read"}}
 
@@ -514,7 +545,8 @@ func TestValidatorRejectsFinalEvidenceWithoutTraceStep(t *testing.T) {
 func TestValidatorAllowsTraceBackedFinalEvidence(t *testing.T) {
 	validator := NewValidator(Config{})
 	diagnosis := &schema.Diagnosis{
-		Summary: "backend is alive",
+		Summary:   "backend is alive",
+		RootCause: &schema.RootCause{Status: "undetermined"},
 		Evidence: []schema.Evidence{
 			{Step: 1, Tool: "http_check", Summary: "backend returned 200"},
 		},

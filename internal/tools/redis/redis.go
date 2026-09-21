@@ -24,7 +24,18 @@ type Tool struct{}
 
 func New() *Tool { return &Tool{} }
 
-func (t *Tool) Spec() tools.ToolSpec { return Spec() }
+func (t *Tool) Spec() tools.ToolSpec {
+	return tools.ToolSpec{
+		Name:        Name,
+		Description: "Connect to Redis and run PING.",
+		Schema: tools.ToolSchema{
+			Properties: map[string]tools.ArgSpec{
+				"addr":     {Type: "string", Required: true, Description: "Redis address such as localhost:6379."},
+				"password": {Type: "string", Description: "Optional Redis AUTH password."},
+			},
+		},
+	}
+}
 
 func (t *Tool) Run(ctx context.Context, rawArgs json.RawMessage) (schema.Observation, error) {
 	var args Args
@@ -42,7 +53,7 @@ func (t *Tool) Run(ctx context.Context, rawArgs json.RawMessage) (schema.Observa
 		return schema.Observation{}, fmt.Errorf("connect redis: %w", err)
 	}
 	defer conn.Close()
-	applyConnDeadline(ctx, conn)
+	tools.ApplyConnDeadline(ctx, conn)
 
 	reader := bufio.NewReader(conn)
 	if args.Password != "" {
@@ -110,25 +121,4 @@ func readRedisSimpleLine(reader *bufio.Reader) (string, error) {
 		return strings.TrimPrefix(line, "+"), nil
 	}
 	return "", fmt.Errorf("unexpected redis response %q", line)
-}
-
-func applyConnDeadline(ctx context.Context, conn net.Conn) {
-	deadline, ok := ctx.Deadline()
-	if !ok {
-		deadline = time.Now().Add(5 * time.Second)
-	}
-	_ = conn.SetDeadline(deadline)
-}
-
-func Spec() tools.ToolSpec {
-	return tools.ToolSpec{
-		Name:        Name,
-		Description: "Connect to Redis and run PING.",
-		Schema: tools.ToolSchema{
-			Properties: map[string]tools.ArgSpec{
-				"addr":     {Type: "string", Required: true, Description: "Redis address such as localhost:6379."},
-				"password": {Type: "string", Description: "Optional Redis AUTH password."},
-			},
-		},
-	}
 }

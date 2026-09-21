@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/url"
@@ -46,6 +47,62 @@ func TestWebSocketCheckReturnsSuccessfulHandshakeObservation(t *testing.T) {
 	}
 	if !strings.Contains(observation.Summary, "101") {
 		t.Fatalf("summary = %q, want 101", observation.Summary)
+	}
+}
+
+func TestWebSocketCheckVerifiesPingPongAfterHandshake(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = listener.Close()
+	})
+	go func() {
+		conn, err := listener.Accept()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		reader := bufio.NewReader(conn)
+		request, err := http.ReadRequest(reader)
+		if err != nil {
+			return
+		}
+		accept := websocketAccept(request.Header.Get("Sec-WebSocket-Key"))
+		response := "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: " + accept + "\r\n\r\n"
+		if _, err := conn.Write([]byte(response)); err != nil {
+			return
+		}
+		// 读取客户端 masked ping 帧：2 字节头 + 4 字节掩码 + 负载，然后回 pong。
+		header := make([]byte, 2)
+		if _, err := io.ReadFull(reader, header); err != nil {
+			return
+		}
+		payloadLen := int(header[1] & 0x7F)
+		if _, err := io.ReadFull(reader, make([]byte, 4+payloadLen)); err != nil {
+			return
+		}
+		_, _ = conn.Write([]byte{0x8A, 0x00})
+	}()
+	addr := listener.Addr().String()
+
+	observation, err := NewWithAllowedHosts(nil).Run(context.Background(), mustArgs(t, Args{
+		URL:  "ws://" + addr + "/ws",
+		Ping: true,
+	}))
+	if err != nil {
+		t.Fatalf("run websocket check: %v", err)
+	}
+
+	if observation.Data["handshake_success"] != true {
+		t.Fatalf("handshake_success = %#v, want true", observation.Data["handshake_success"])
+	}
+	if observation.Data["ping_pong_ok"] != true {
+		t.Fatalf("ping_pong_ok = %#v, want true: %#v", observation.Data["ping_pong_ok"], observation.Data)
+	}
+	if !strings.Contains(observation.Summary, "ping/pong verified") {
+		t.Fatalf("summary = %q, want ping/pong verified", observation.Summary)
 	}
 }
 
@@ -111,7 +168,7 @@ func TestWebSocketCheckRejectsDisallowedHostBeforeDial(t *testing.T) {
 }
 
 func TestWebSocketCheckSchemaDescribesOptionalHeaders(t *testing.T) {
-	schema := Spec().Schema
+	schema := NewWithAllowedHosts(nil).Spec().Schema
 
 	if schema.Properties["headers"].Type != "object" {
 		t.Fatalf("headers schema = %#v, want object", schema.Properties["headers"])

@@ -21,23 +21,41 @@ type CheckArgs struct {
 }
 
 type CheckTool struct {
+	// open 默认走 database/sql；测试在包内替换为 fake runner。
 	open func(string) (sqlRunner, error)
 }
 
 type sqlRunner interface {
 	Ping(context.Context) error
+	Identity(context.Context) (identity, error)
 	TableExists(context.Context, string) (bool, error)
 	Close() error
 }
 
-func NewCheck(open func(string) (sqlRunner, error)) *CheckTool {
-	if open == nil {
-		open = openSQLRunner
-	}
-	return &CheckTool{open: open}
+// identity 是实例身份指纹，用于识别"端口上不是预期实例"的冒名场景，
+// 例如宿主机口被另一个同名库的 PostgreSQL 占据。
+type identity struct {
+	Database   string
+	Version    string
+	ServerAddr string
 }
 
-func (t *CheckTool) Spec() tools.ToolSpec { return CheckSpec() }
+func NewCheck() *CheckTool {
+	return &CheckTool{open: openSQLRunner}
+}
+
+func (t *CheckTool) Spec() tools.ToolSpec {
+	return tools.ToolSpec{
+		Name:        CheckName,
+		Description: "Authenticate to PostgreSQL, run a SQL ping, and optionally check table existence.",
+		Schema: tools.ToolSchema{
+			Properties: map[string]tools.ArgSpec{
+				"dsn":    {Type: "string", Required: true, Description: "PostgreSQL connection string."},
+				"tables": {Type: "array", Description: "Optional table names to check, for example users."},
+			},
+		},
+	}
+}
 
 func (t *CheckTool) Run(ctx context.Context, rawArgs json.RawMessage) (schema.Observation, error) {
 	var args CheckArgs
@@ -58,6 +76,10 @@ func (t *CheckTool) Run(ctx context.Context, rawArgs json.RawMessage) (schema.Ob
 	if err := db.Ping(ctx); err != nil {
 		return schema.Observation{}, fmt.Errorf("sql ping postgres: %w", err)
 	}
+	who, err := db.Identity(ctx)
+	if err != nil {
+		return schema.Observation{}, fmt.Errorf("query postgres identity: %w", err)
+	}
 
 	checked := make([]string, 0, len(args.Tables))
 	missing := []string{}
@@ -77,7 +99,7 @@ func (t *CheckTool) Run(ctx context.Context, rawArgs json.RawMessage) (schema.Ob
 	}
 
 	latencyMS := time.Since(startedAt).Milliseconds()
-	summary := fmt.Sprintf("PostgreSQL SQL ping succeeded in %dms", latencyMS)
+	summary := fmt.Sprintf("PostgreSQL SQL ping succeeded in %dms (db=%s, server=%s)", latencyMS, who.Database, versionPreview(who.Version))
 	if len(checked) > 0 && len(missing) == 0 {
 		summary += fmt.Sprintf("; tables exist: %s", strings.Join(checked, ", "))
 	}
@@ -90,6 +112,9 @@ func (t *CheckTool) Run(ctx context.Context, rawArgs json.RawMessage) (schema.Ob
 		Summary: summary,
 		Data: map[string]any{
 			"sql_ping_ok":    true,
+			"database":       who.Database,
+			"server_version": who.Version,
+			"server_addr":    who.ServerAddr,
 			"checked_tables": checked,
 			"missing_tables": missing,
 			"latency_ms":     latencyMS,
@@ -97,17 +122,14 @@ func (t *CheckTool) Run(ctx context.Context, rawArgs json.RawMessage) (schema.Ob
 	}, nil
 }
 
-func CheckSpec() tools.ToolSpec {
-	return tools.ToolSpec{
-		Name:        CheckName,
-		Description: "Authenticate to PostgreSQL, run a SQL ping, and optionally check table existence.",
-		Schema: tools.ToolSchema{
-			Properties: map[string]tools.ArgSpec{
-				"dsn":    {Type: "string", Required: true, Description: "PostgreSQL connection string."},
-				"tables": {Type: "array", Description: "Optional table names to check, for example users."},
-			},
-		},
+// versionPreview 截取 version() 的前几段：构建平台信息（Linux/Windows、编译器）
+// 是判断"连到的是否为预期容器实例"的关键证据，但完整串太长不适合放 summary。
+func versionPreview(version string) string {
+	fields := strings.Fields(version)
+	if len(fields) > 6 {
+		fields = fields[:6]
 	}
+	return strings.Join(fields, " ")
 }
 
 type databaseSQLRunner struct {
@@ -124,6 +146,14 @@ func openSQLRunner(dsn string) (sqlRunner, error) {
 
 func (r databaseSQLRunner) Ping(ctx context.Context) error {
 	return r.db.PingContext(ctx)
+}
+
+func (r databaseSQLRunner) Identity(ctx context.Context) (identity, error) {
+	var who identity
+	err := r.db.QueryRowContext(ctx,
+		"select current_database(), version(), coalesce(inet_server_addr()::text, '')").
+		Scan(&who.Database, &who.Version, &who.ServerAddr)
+	return who, err
 }
 
 func (r databaseSQLRunner) TableExists(ctx context.Context, table string) (bool, error) {

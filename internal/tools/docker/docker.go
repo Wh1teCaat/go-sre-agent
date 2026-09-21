@@ -18,6 +18,7 @@ const (
 	PSName      = "docker_ps"
 	InspectName = "docker_inspect"
 	LogsName    = "docker_logs"
+	StatsName   = "docker_stats"
 )
 
 type InspectArgs struct {
@@ -27,6 +28,10 @@ type InspectArgs struct {
 type LogsArgs struct {
 	Container string `json:"container"`
 	Lines     int    `json:"lines,omitempty"`
+}
+
+type StatsArgs struct {
+	Container string `json:"container"`
 }
 
 type commandRunner func(ctx context.Context, args ...string) ([]byte, error)
@@ -40,6 +45,7 @@ type policy struct {
 type PSTool struct{ policy *policy }
 type InspectTool struct{ policy *policy }
 type LogsTool struct{ policy *policy }
+type StatsTool struct{ policy *policy }
 
 func NewPS(allowedContainers []string) *PSTool {
 	return &PSTool{policy: newPolicy(allowedContainers, runDocker)}
@@ -51,6 +57,10 @@ func NewInspect(allowedContainers []string) *InspectTool {
 
 func NewLogs(allowedContainers []string) *LogsTool {
 	return &LogsTool{policy: newPolicy(allowedContainers, runDocker)}
+}
+
+func NewStats(allowedContainers []string) *StatsTool {
+	return &StatsTool{policy: newPolicy(allowedContainers, runDocker)}
 }
 
 func newPolicy(allowedContainers []string, runner commandRunner) *policy {
@@ -79,9 +89,37 @@ func (p *policy) validate(container string) (string, error) {
 	return container, nil
 }
 
-func (t *PSTool) Spec() tools.ToolSpec      { return PSSpec() }
-func (t *InspectTool) Spec() tools.ToolSpec { return InspectSpec() }
-func (t *LogsTool) Spec() tools.ToolSpec    { return LogsSpec() }
+func (t *PSTool) Spec() tools.ToolSpec {
+	return tools.ToolSpec{Name: PSName, Description: "Inspect runtime state of every configured Docker container.", Schema: tools.ToolSchema{Properties: map[string]tools.ArgSpec{}}}
+}
+
+func (t *InspectTool) Spec() tools.ToolSpec {
+	return tools.ToolSpec{
+		Name: InspectName, Description: "Inspect state, exit code, and health of one configured Docker container.",
+		Schema: tools.ToolSchema{Properties: map[string]tools.ArgSpec{
+			"container": {Type: "string", Required: true, Description: "Exact configured container name."},
+		}},
+	}
+}
+
+func (t *StatsTool) Spec() tools.ToolSpec {
+	return tools.ToolSpec{
+		Name: StatsName, Description: "Read one-shot CPU, memory, and PID usage plus restart count of one configured Docker container.",
+		Schema: tools.ToolSchema{Properties: map[string]tools.ArgSpec{
+			"container": {Type: "string", Required: true, Description: "Exact configured container name."},
+		}},
+	}
+}
+
+func (t *LogsTool) Spec() tools.ToolSpec {
+	return tools.ToolSpec{
+		Name: LogsName, Description: "Read recent logs from one configured Docker container.",
+		Schema: tools.ToolSchema{Properties: map[string]tools.ArgSpec{
+			"container": {Type: "string", Required: true, Description: "Exact configured container name."},
+			"lines":     {Type: "number", Description: "Recent log line count, capped at 500."},
+		}},
+	}
+}
 
 func (t *PSTool) Run(ctx context.Context, _ json.RawMessage) (schema.Observation, error) {
 	if len(t.policy.names) == 0 {
@@ -169,6 +207,48 @@ func (t *LogsTool) Run(ctx context.Context, rawArgs json.RawMessage) (schema.Obs
 	}, nil
 }
 
+func (t *StatsTool) Run(ctx context.Context, rawArgs json.RawMessage) (schema.Observation, error) {
+	var args StatsArgs
+	if err := json.Unmarshal(rawArgs, &args); err != nil {
+		return schema.Observation{}, fmt.Errorf("decode docker_stats args: %w", err)
+	}
+	container, err := t.policy.validate(args.Container)
+	if err != nil {
+		return schema.Observation{}, err
+	}
+	output, err := t.policy.run(ctx, "stats", "--no-stream", "--format", "{{json .}}", container)
+	if err != nil {
+		return schema.Observation{}, fmt.Errorf("docker stats %q: %w: %s", container, err, tools.RedactSensitive(strings.TrimSpace(string(output))))
+	}
+	var stats struct {
+		CPUPerc  string `json:"CPUPerc"`
+		MemPerc  string `json:"MemPerc"`
+		MemUsage string `json:"MemUsage"`
+		PIDs     string `json:"PIDs"`
+	}
+	if err := json.Unmarshal(bytes.TrimSpace(output), &stats); err != nil {
+		return schema.Observation{}, fmt.Errorf("decode docker stats for %q: %w", container, err)
+	}
+
+	data := map[string]any{
+		"container":   container,
+		"cpu_percent": stats.CPUPerc,
+		"mem_percent": stats.MemPerc,
+		"mem_usage":   stats.MemUsage,
+		"pids":        stats.PIDs,
+	}
+	summary := fmt.Sprintf("Docker container %s cpu=%s mem=%s (%s) pids=%s", container, stats.CPUPerc, stats.MemPerc, stats.MemUsage, stats.PIDs)
+	// 重启计数是 OOM/崩溃循环的重要信号；读取失败时保留核心 stats，不让整个检查失败。
+	if restartOutput, err := t.policy.run(ctx, "inspect", "--format", "{{.RestartCount}}", container); err == nil {
+		if restartCount := strings.TrimSpace(string(restartOutput)); restartCount != "" {
+			data["restart_count"] = restartCount
+			summary += fmt.Sprintf(" restarts=%s", restartCount)
+		}
+	}
+
+	return schema.Observation{Tool: StatsName, Summary: summary, Data: data}, nil
+}
+
 type containerState struct {
 	Status     string `json:"Status"`
 	Running    bool   `json:"Running"`
@@ -232,27 +312,4 @@ func runDocker(ctx context.Context, args ...string) ([]byte, error) {
 	command.Stderr = output
 	err := command.Run()
 	return output.data, err
-}
-
-func PSSpec() tools.ToolSpec {
-	return tools.ToolSpec{Name: PSName, Description: "Inspect runtime state of every configured Docker container.", Schema: tools.ToolSchema{Properties: map[string]tools.ArgSpec{}}}
-}
-
-func InspectSpec() tools.ToolSpec {
-	return tools.ToolSpec{
-		Name: InspectName, Description: "Inspect state, exit code, and health of one configured Docker container.",
-		Schema: tools.ToolSchema{Properties: map[string]tools.ArgSpec{
-			"container": {Type: "string", Required: true, Description: "Exact configured container name."},
-		}},
-	}
-}
-
-func LogsSpec() tools.ToolSpec {
-	return tools.ToolSpec{
-		Name: LogsName, Description: "Read recent logs from one configured Docker container.",
-		Schema: tools.ToolSchema{Properties: map[string]tools.ArgSpec{
-			"container": {Type: "string", Required: true, Description: "Exact configured container name."},
-			"lines":     {Type: "number", Description: "Recent log line count, capped at 500."},
-		}},
-	}
 }

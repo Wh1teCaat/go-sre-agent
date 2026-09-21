@@ -13,6 +13,8 @@ func main() {
 	switch os.Args[1] {
 	case "diagnose":
 		runDiagnoseCommand(os.Args[2:])
+	case "eval":
+		runEvalCommand(os.Args[2:])
 	case "resume":
 		runResumeCommand(os.Args[2:])
 	case "status":
@@ -30,6 +32,8 @@ func main() {
 // 参数: 无；返回: 无，函数固定以退出码 2 终止进程。
 func printUsageAndExit() {
 	fmt.Fprintln(os.Stderr, "usage: sre-agent diagnose --goal <goal> [--config config.yaml] [--mock-scenario login-500] [--out report.md]")
+	fmt.Fprintln(os.Stderr, "       sre-agent eval mock [--scenario all] [--results-dir evals/results]")
+	fmt.Fprintln(os.Stderr, "       sre-agent eval model [--scenario login-500] [--config config.yaml] [--results-dir evals/results] [--execute-real-model]")
 	fmt.Fprintln(os.Stderr, "       sre-agent resume --run-id <run_id> [--config config.yaml]")
 	fmt.Fprintln(os.Stderr, "       sre-agent status --run-id <run_id> [--config config.yaml]")
 	fmt.Fprintln(os.Stderr, "       sre-agent report --run-id <run_id> [--config config.yaml]")

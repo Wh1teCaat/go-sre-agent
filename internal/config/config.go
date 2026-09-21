@@ -27,6 +27,8 @@ type PolicyConfig struct {
 	AllowedLogDirs    []string
 	AllowedHosts      []string
 	AllowedContainers []string
+	// RedisKeyPrefixes 限定 redis_scan 可查询的键前缀，避免把业务数据暴露进模型上下文。
+	RedisKeyPrefixes []string
 }
 
 type PathsConfig struct {
@@ -36,10 +38,20 @@ type PathsConfig struct {
 
 type TargetConfig struct {
 	BackendBaseURL string
-	PostgresDSN    string
-	RedisAddr      string
-	WebSocketURL   string
-	LogFile        string
+	// AllowedPostURLs 是 http_check 允许 POST 复现的诊断地址；GET/HEAD 不受限制。
+	// 未配置时回退为 backend_base_url 派生的登录地址（见 cmd 层 legacyLoginURL）。
+	AllowedPostURLs []string
+	PostgresDSN     string
+	RedisAddr       string
+	KafkaAddr       string
+	KafkaTopic      string
+	WebSocketURL    string
+	LogFile         string
+	// SmokeCommand 非空时启用 smoke_run 合成事务工具。
+	// 这是唯一的非只读探测（测试账号真实写入），必须由运营者显式配置。
+	SmokeCommand []string
+	SmokeDir     string
+	SmokeTimeout time.Duration
 }
 
 type rawConfig struct {
@@ -54,17 +66,24 @@ type rawConfig struct {
 		AllowedLogDirs    []string `yaml:"allowed_log_dirs"`
 		AllowedHosts      []string `yaml:"allowed_hosts"`
 		AllowedContainers []string `yaml:"allowed_containers"`
+		RedisKeyPrefixes  []string `yaml:"redis_key_prefixes"`
 	} `yaml:"policy"`
 	Paths struct {
 		RunDir    string `yaml:"run_dir"`
 		ReportDir string `yaml:"report_dir"`
 	} `yaml:"paths"`
 	Targets struct {
-		BackendBaseURL string `yaml:"backend_base_url"`
-		PostgresDSN    string `yaml:"postgres_dsn"`
-		RedisAddr      string `yaml:"redis_addr"`
-		WebSocketURL   string `yaml:"websocket_url"`
-		LogFile        string `yaml:"log_file"`
+		BackendBaseURL  string   `yaml:"backend_base_url"`
+		AllowedPostURLs []string `yaml:"allowed_post_urls"`
+		PostgresDSN     string   `yaml:"postgres_dsn"`
+		RedisAddr       string   `yaml:"redis_addr"`
+		KafkaAddr       string   `yaml:"kafka_addr"`
+		KafkaTopic      string   `yaml:"kafka_topic"`
+		WebSocketURL    string   `yaml:"websocket_url"`
+		LogFile         string   `yaml:"log_file"`
+		SmokeCommand    []string `yaml:"smoke_command"`
+		SmokeDir        string   `yaml:"smoke_dir"`
+		SmokeTimeout    string   `yaml:"smoke_timeout"`
 	} `yaml:"targets"`
 }
 
@@ -83,12 +102,18 @@ func Default() Config {
 				"http_check",
 				"log_read",
 				"redis_ping",
+				"redis_check",
+				"redis_scan",
+				"kafka_check",
 				"postgres_ping",
 				"postgres_check",
 				"websocket_check",
 				"docker_ps",
 				"docker_inspect",
 				"docker_logs",
+				"docker_stats",
+				"docker_probe",
+				"smoke_run",
 			},
 			AllowedHosts: []string{
 				"localhost",
@@ -101,6 +126,11 @@ func Default() Config {
 				"chat-postgres",
 				"chat-redis-compose",
 			},
+			RedisKeyPrefixes: []string{
+				"presence:",
+				"auth:refresh:",
+				"user:profile:",
+			},
 		},
 		Paths: PathsConfig{
 			RunDir: ".runs",
@@ -109,6 +139,8 @@ func Default() Config {
 			BackendBaseURL: "http://localhost:8080",
 			PostgresDSN:    "postgres://postgres:postgres@localhost:5432/chat_proj?sslmode=disable",
 			RedisAddr:      "localhost:6379",
+			KafkaAddr:      "localhost:29092",
+			KafkaTopic:     "chat.events",
 			WebSocketURL:   "ws://localhost:8080/v1/ws",
 			LogFile:        "testdata/logs/chat_proj_error.log",
 		},
@@ -167,6 +199,9 @@ func Load(path string) (Config, error) {
 	if len(raw.Policy.AllowedContainers) > 0 {
 		cfg.Policy.AllowedContainers = raw.Policy.AllowedContainers
 	}
+	if len(raw.Policy.RedisKeyPrefixes) > 0 {
+		cfg.Policy.RedisKeyPrefixes = raw.Policy.RedisKeyPrefixes
+	}
 	if raw.Paths.RunDir != "" {
 		cfg.Paths.RunDir = raw.Paths.RunDir
 	}
@@ -176,17 +211,42 @@ func Load(path string) (Config, error) {
 	if raw.Targets.BackendBaseURL != "" {
 		cfg.Targets.BackendBaseURL = raw.Targets.BackendBaseURL
 	}
+	if len(raw.Targets.AllowedPostURLs) > 0 {
+		cfg.Targets.AllowedPostURLs = raw.Targets.AllowedPostURLs
+	}
 	if raw.Targets.PostgresDSN != "" {
 		cfg.Targets.PostgresDSN = raw.Targets.PostgresDSN
 	}
 	if raw.Targets.RedisAddr != "" {
 		cfg.Targets.RedisAddr = raw.Targets.RedisAddr
 	}
+	if raw.Targets.KafkaAddr != "" {
+		cfg.Targets.KafkaAddr = raw.Targets.KafkaAddr
+	}
+	if raw.Targets.KafkaTopic != "" {
+		cfg.Targets.KafkaTopic = raw.Targets.KafkaTopic
+	}
 	if raw.Targets.WebSocketURL != "" {
 		cfg.Targets.WebSocketURL = raw.Targets.WebSocketURL
 	}
 	if raw.Targets.LogFile != "" {
 		cfg.Targets.LogFile = raw.Targets.LogFile
+	}
+	if len(raw.Targets.SmokeCommand) > 0 {
+		cfg.Targets.SmokeCommand = raw.Targets.SmokeCommand
+	}
+	if raw.Targets.SmokeDir != "" {
+		cfg.Targets.SmokeDir = raw.Targets.SmokeDir
+	}
+	if raw.Targets.SmokeTimeout != "" {
+		duration, err := time.ParseDuration(raw.Targets.SmokeTimeout)
+		if err != nil {
+			return Config{}, fmt.Errorf("parse targets.smoke_timeout: %w", err)
+		}
+		if duration <= 0 {
+			return Config{}, fmt.Errorf("targets.smoke_timeout must be positive")
+		}
+		cfg.Targets.SmokeTimeout = duration
 	}
 
 	return cfg, nil

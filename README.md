@@ -95,6 +95,9 @@ paths:
 
 targets:
   backend_base_url: http://localhost:8080
+  # http_check 允许 POST 复现的诊断地址；未配置时回退为 backend_base_url 派生的登录地址。
+  allowed_post_urls:
+    - http://localhost:8080/v1/user/login
   postgres_dsn: postgres://postgres:postgres@localhost:5432/app?sslmode=disable
   redis_addr: localhost:6379
   websocket_url: ws://localhost:8080/ws
@@ -143,15 +146,21 @@ go run ./cmd/sre-agent report --run-id <run_id>
 
 | 工具 | 用途 |
 | --- | --- |
-| `http_check` | 检查 HTTP 状态、延迟和响应片段 |
-| `log_read` | 读取允许目录中的近期日志，可按关键词或精确 `request_id` 关联业务流 |
+| `http_check` | 检查 HTTP 状态、延迟和响应片段；`repeat` 可对偶发故障采样并输出状态分布 |
+| `log_read` | 读取允许目录中的近期日志，可按关键词、精确 `request_id` 或时间窗口（`since`/`last_minutes`）过滤 |
 | `postgres_ping` | 检查 PostgreSQL 协议层可达性 |
 | `postgres_check` | 检查 PostgreSQL 认证、SQL 连通性和表是否存在 |
 | `redis_ping` | 通过 `PING/PONG` 检查 Redis |
-| `websocket_check` | 检查 WebSocket HTTP Upgrade 握手 |
+| `redis_check` | 读取 Redis INFO：内存用量、驱逐、连接数、keyspace 规模和实例身份指纹 |
+| `redis_scan` | 在前缀白名单内做键级只读查询（SCAN + TTL），核对 presence/token 等服务端状态 |
+| `kafka_check` | 只读 Kafka 健康检查：broker 探活、cluster id、topic 分区数、消费组与活跃 lag |
+| `websocket_check` | 检查 WebSocket HTTP Upgrade 握手；`ping` 可验证协议层消息通路 |
 | `docker_ps` | 查看允许容器的运行状态 |
 | `docker_inspect` | 查看允许容器的状态、退出码和健康状态 |
 | `docker_logs` | 读取允许容器的近期日志 |
+| `docker_stats` | 查看允许容器的 CPU、内存、PID 用量和重启次数 |
+| `docker_probe` | 在允许容器内执行固定只读探测模板：未发布端口的 /health、nginx 上游快照、容器内 PostgreSQL 身份 |
+| `smoke_run` | 合成事务：执行配置的端到端冒烟脚本定位消息链路故障环节（唯一非只读工具，需显式配置启用） |
 
 ## 安全边界
 
@@ -162,6 +171,10 @@ go run ./cmd/sre-agent report --run-id <run_id>
 - 工具和 LLM 请求均有独立超时。
 - 常见 password、token、API key 和 secret 会在 trace 中脱敏。
 - 模型生成的 evidence 必须匹配本次真实 trace。
+- 根因结论必须以结构化 `root_cause` 声明（`identified`/`suspected`/`undetermined`）；判定为 `identified` 时必须绑定真实 trace 证据。
+- `docker_probe` 只能执行固定的只读命令模板；`redis_scan` 受键前缀白名单约束。
+- `postgres_check`/`redis_check` 会输出实例身份指纹（版本、平台、run_id），用于识别端口被无关实例占据的冒名场景。
+- `smoke_run` 是唯一的非只读工具（测试账号真实写入），默认不存在，仅在配置显式写出 `targets.smoke_command` 时注册，且命令内容模型不可指定。
 
 本项目提供执行边界，但接入真实环境前仍应使用最小权限凭据，并检查配置中的目标和白名单。
 
@@ -173,6 +186,7 @@ go vet ./...
 ```
 
 真实故障注入与验收步骤见 [docs/fault-injection.md](docs/fault-injection.md)。
+固定回归和显式真实模型评测的边界见 [docs/evaluations.md](docs/evaluations.md)。
 
 ## 项目结构
 
@@ -191,14 +205,13 @@ internal/report/     Markdown 报告生成
 
 ## 当前限制
 
-- `websocket_check` 仅诊断握手，不收发业务消息。
+- `websocket_check` 的 `ping` 仅验证协议层 ping/pong，不收发业务消息。
 - `postgres_ping` 仅检查协议层可达性；需要认证和 SQL 证据时应使用 `postgres_check`。
 - 动态诊断建议主要由模型生成。
 
 ## 路线图
 
-- 支持可选的 WebSocket 业务消息诊断。
 - 运行历史增长后，将 `.runs` 迁移到 SQLite 并增加相关性检索。
-- 持续补充真实故障注入回归样本。
+- 持续补充真实故障注入回归样本（见 `scripts/fault-injection.sh`）。
 
 更多示例见 [docs/examples.md](docs/examples.md)。

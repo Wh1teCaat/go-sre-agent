@@ -14,9 +14,9 @@ func TestPostgresCheckReportsMissingTables(t *testing.T) {
 			"users": false,
 		},
 	}
-	tool := NewCheck(func(string) (sqlRunner, error) {
+	tool := &CheckTool{open: func(string) (sqlRunner, error) {
 		return runner, nil
-	})
+	}}
 
 	observation, err := tool.Run(context.Background(), mustCheckArgs(t, CheckArgs{
 		DSN:    "postgres://app:secret@localhost:5432/chat_proj?sslmode=disable",
@@ -32,6 +32,12 @@ func TestPostgresCheckReportsMissingTables(t *testing.T) {
 	if observation.Data["sql_ping_ok"] != true {
 		t.Fatalf("sql_ping_ok = %#v, want true", observation.Data["sql_ping_ok"])
 	}
+	if observation.Data["database"] != "chat_proj" {
+		t.Fatalf("database = %#v, want chat_proj", observation.Data["database"])
+	}
+	if !strings.Contains(observation.Summary, "db=chat_proj") || !strings.Contains(observation.Summary, "PostgreSQL 16.9") {
+		t.Fatalf("summary = %q, want identity fingerprint", observation.Summary)
+	}
 	missing := observation.Data["missing_tables"].([]string)
 	if len(missing) != 1 || missing[0] != "users" {
 		t.Fatalf("missing tables = %#v, want users", missing)
@@ -42,9 +48,9 @@ func TestPostgresCheckReportsMissingTables(t *testing.T) {
 }
 
 func TestPostgresCheckReturnsPingError(t *testing.T) {
-	tool := NewCheck(func(string) (sqlRunner, error) {
+	tool := &CheckTool{open: func(string) (sqlRunner, error) {
 		return &fakeSQLRunner{pingErr: errors.New("password authentication failed")}, nil
-	})
+	}}
 
 	_, err := tool.Run(context.Background(), mustCheckArgs(t, CheckArgs{
 		DSN: "postgres://app:bad@localhost:5432/chat_proj?sslmode=disable",
@@ -73,6 +79,14 @@ type fakeSQLRunner struct {
 
 func (r *fakeSQLRunner) Ping(context.Context) error {
 	return r.pingErr
+}
+
+func (r *fakeSQLRunner) Identity(context.Context) (identity, error) {
+	return identity{
+		Database:   "chat_proj",
+		Version:    "PostgreSQL 16.9 on x86_64-pc-linux-musl, compiled by gcc",
+		ServerAddr: "172.21.0.2",
+	}, nil
 }
 
 func (r *fakeSQLRunner) TableExists(_ context.Context, table string) (bool, error) {

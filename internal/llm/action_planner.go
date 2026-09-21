@@ -123,39 +123,15 @@ func buildActionChatRequest(config ActionPlannerConfig, request Request) (ChatRe
 	}, nil
 }
 
-// extractActionJSON 对模型输出做轻量容错：去掉 Markdown 代码块，并从第一个 JSON 对象开始解析。
+// extractActionJSON 对模型输出做轻量容错：从第一个 JSON 对象开始解析。
+// Markdown fence 等前后缀文本由此被跳过（json.Decoder 只读一个值，忽略尾部内容）。
 // 真正的结构和字段合法性仍交给 json decoder 与 policy validator 处理。
 func extractActionJSON(content string) string {
 	text := strings.TrimSpace(content)
-	if fenced, ok := extractMarkdownFence(text); ok {
-		text = strings.TrimSpace(fenced)
-	}
 	if index := strings.IndexByte(text, '{'); index >= 0 {
-		text = text[index:]
+		return text[index:]
 	}
 	return text
-}
-
-// extractMarkdownFence 提取模型偶尔包裹的 ```json 代码块内容。
-// prompt 已要求不要包 Markdown，但这里保留兼容，避免小格式偏差导致整轮失败。
-func extractMarkdownFence(content string) (string, bool) {
-	start := strings.Index(content, "```")
-	if start < 0 {
-		return "", false
-	}
-
-	afterFence := content[start+3:]
-	newline := strings.IndexByte(afterFence, '\n')
-	if newline < 0 {
-		return "", false
-	}
-	afterFence = afterFence[newline+1:]
-
-	end := strings.Index(afterFence, "```")
-	if end < 0 {
-		return afterFence, true
-	}
-	return afterFence[:end], true
 }
 
 // contentPreview 压缩并截断模型原始输出，供解析错误使用，避免日志里塞入过长响应。

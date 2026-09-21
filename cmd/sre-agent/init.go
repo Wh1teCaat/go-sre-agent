@@ -12,9 +12,11 @@ import (
 	"github.com/y2/go-sre-agent/internal/tools"
 	"github.com/y2/go-sre-agent/internal/tools/docker"
 	"github.com/y2/go-sre-agent/internal/tools/httpcheck"
+	"github.com/y2/go-sre-agent/internal/tools/kafka"
 	"github.com/y2/go-sre-agent/internal/tools/logread"
 	"github.com/y2/go-sre-agent/internal/tools/postgres"
 	"github.com/y2/go-sre-agent/internal/tools/redis"
+	"github.com/y2/go-sre-agent/internal/tools/smoke"
 	"github.com/y2/go-sre-agent/internal/tools/websocket"
 )
 
@@ -47,15 +49,24 @@ func initializeDiagnosis(opts diagnoseOptions, mockScenario string) (diagnosisSe
 func buildToolRegistry(cfg diagnoseOptions) (*tools.Registry, error) {
 	registry := tools.NewRegistry()
 	all := []tools.Tool{
-		httpcheck.NewWithPolicy(2048, cfg.AllowedHosts, []string{loginURLForDiagnose(cfg)}),
+		httpcheck.NewWithPolicy(2048, cfg.AllowedHosts, cfg.AllowedPostURLs),
 		logread.New(cfg.AllowedLogDirs, 1000),
 		postgres.NewPing(),
-		postgres.NewCheck(nil),
+		postgres.NewCheck(),
 		redis.New(),
+		redis.NewCheck(),
+		redis.NewScan(cfg.RedisKeyPrefixes),
+		kafka.NewCheck(),
 		websocket.NewWithAllowedHosts(cfg.AllowedHosts),
 		docker.NewPS(cfg.AllowedContainers),
 		docker.NewInspect(cfg.AllowedContainers),
 		docker.NewLogs(cfg.AllowedContainers),
+		docker.NewStats(cfg.AllowedContainers),
+		docker.NewProbe(cfg.AllowedContainers),
+	}
+	// smoke_run 是唯一的非只读探测（合成事务），仅在运营者显式配置命令时注册。
+	if len(cfg.SmokeCommand) > 0 {
+		all = append(all, smoke.New(cfg.SmokeCommand, cfg.SmokeDir, cfg.SmokeTimeout))
 	}
 	for _, tool := range all {
 		if err := registry.Register(tool); err != nil {
@@ -148,15 +159,29 @@ func resolveDiagnosisConfig(opts diagnoseOptions) (diagnoseOptions, error) {
 	if len(allowedLogDirs) == 0 {
 		allowedLogDirs = []string{filepath.Dir(cfg.Targets.LogFile)}
 	}
+	allowedPostURLs := cfg.Targets.AllowedPostURLs
+	if len(allowedPostURLs) == 0 {
+		// 兼容未配置 targets.allowed_post_urls 的旧配置：沿用登录地址派生规则。
+		if loginURL := legacyLoginURL(cfg.Targets.BackendBaseURL); loginURL != "" {
+			allowedPostURLs = []string{loginURL}
+		}
+	}
 	resolved := diagnoseOptions{
 		Goal:              opts.Goal,
 		BackendBaseURL:    cfg.Targets.BackendBaseURL,
+		AllowedPostURLs:   allowedPostURLs,
 		LogFile:           cfg.Targets.LogFile,
 		AllowedLogDirs:    allowedLogDirs,
 		AllowedHosts:      cfg.Policy.AllowedHosts,
 		AllowedContainers: cfg.Policy.AllowedContainers,
+		RedisKeyPrefixes:  cfg.Policy.RedisKeyPrefixes,
 		PostgresDSN:       cfg.Targets.PostgresDSN,
 		RedisAddr:         cfg.Targets.RedisAddr,
+		KafkaAddr:         cfg.Targets.KafkaAddr,
+		KafkaTopic:        cfg.Targets.KafkaTopic,
+		SmokeCommand:      cfg.Targets.SmokeCommand,
+		SmokeDir:          cfg.Targets.SmokeDir,
+		SmokeTimeout:      cfg.Targets.SmokeTimeout,
 		WebSocketURL:      cfg.Targets.WebSocketURL,
 		MaxSteps:          cfg.Agent.MaxSteps,
 		LLMTimeout:        cfg.Agent.LLMTimeout,
@@ -208,10 +233,12 @@ func loadAppConfig(configPath string) (appconfig.Config, error) {
 func targetContextForDiagnose(cfg diagnoseOptions) map[string]any {
 	return map[string]any{
 		"backend_base_url":        cfg.BackendBaseURL,
-		"login_url":               loginURLForDiagnose(cfg),
+		"allowed_post_urls":       cfg.AllowedPostURLs,
 		"postgres_target":         safePostgresDSNForPrompt(cfg.PostgresDSN),
 		"postgres_dsn_configured": strings.TrimSpace(cfg.PostgresDSN) != "",
 		"redis_addr":              cfg.RedisAddr,
+		"kafka_addr":              cfg.KafkaAddr,
+		"kafka_topic":             cfg.KafkaTopic,
 		"websocket_url":           cfg.WebSocketURL,
 		"log_file":                cfg.LogFile,
 		"allowed_hosts":           cfg.AllowedHosts,
@@ -219,13 +246,13 @@ func targetContextForDiagnose(cfg diagnoseOptions) map[string]any {
 	}
 }
 
-// loginURLForDiagnose 根据后端地址生成允许 POST 的登录诊断地址。
-// 参数: cfg 为诊断配置；返回: 登录 URL，后端地址为空时返回空字符串。
-func loginURLForDiagnose(cfg diagnoseOptions) string {
-	if strings.TrimSpace(cfg.BackendBaseURL) == "" {
+// legacyLoginURL 是未配置 targets.allowed_post_urls 时的兼容回退：
+// 按 go-chat 的路由约定从后端地址派生登录诊断地址。新配置应显式列出 POST 白名单。
+func legacyLoginURL(backendBaseURL string) string {
+	if strings.TrimSpace(backendBaseURL) == "" {
 		return ""
 	}
-	return strings.TrimRight(cfg.BackendBaseURL, "/") + "/v1/user/login"
+	return strings.TrimRight(backendBaseURL, "/") + "/v1/user/login"
 }
 
 // toolArgOverridesForDiagnose 固定依赖工具参数，防止模型改写配置目标。
@@ -238,6 +265,15 @@ func toolArgOverridesForDiagnose(cfg diagnoseOptions) map[string]map[string]any 
 	}
 	if addr := strings.TrimSpace(cfg.RedisAddr); addr != "" {
 		overrides[redis.Name] = map[string]any{"addr": addr}
+		overrides[redis.CheckName] = map[string]any{"addr": addr}
+		overrides[redis.ScanName] = map[string]any{"addr": addr}
+	}
+	if addr := strings.TrimSpace(cfg.KafkaAddr); addr != "" {
+		kafkaOverrides := map[string]any{"addr": addr}
+		if topic := strings.TrimSpace(cfg.KafkaTopic); topic != "" {
+			kafkaOverrides["topic"] = topic
+		}
+		overrides[kafka.CheckName] = kafkaOverrides
 	}
 	if len(overrides) == 0 {
 		return nil

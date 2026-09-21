@@ -7,6 +7,7 @@ import (
 	"crypto/sha1"
 	"crypto/tls"
 	"encoding/base64"
+	"encoding/binary"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -25,6 +26,7 @@ const Name = "websocket_check"
 type Args struct {
 	URL     string            `json:"url"`
 	Headers map[string]string `json:"headers,omitempty"`
+	Ping    bool              `json:"ping,omitempty"`
 }
 
 type Tool struct {
@@ -35,7 +37,19 @@ func NewWithAllowedHosts(allowedHosts []string) *Tool {
 	return &Tool{allowedHosts: tools.NewAllowedHosts(allowedHosts)}
 }
 
-func (t *Tool) Spec() tools.ToolSpec { return Spec() }
+func (t *Tool) Spec() tools.ToolSpec {
+	return tools.ToolSpec{
+		Name:        Name,
+		Description: "Attempt a WebSocket connection and report handshake success or failure.",
+		Schema: tools.ToolSchema{
+			Properties: map[string]tools.ArgSpec{
+				"url":     {Type: "string", Required: true, Description: "WebSocket URL to dial."},
+				"headers": {Type: "object", Description: "Optional headers for the WebSocket handshake."},
+				"ping":    {Type: "boolean", Description: "After a successful handshake, send a protocol ping frame and verify the pong reply to check the message path."},
+			},
+		},
+	}
+}
 
 func (t *Tool) Run(ctx context.Context, rawArgs json.RawMessage) (schema.Observation, error) {
 	var args Args
@@ -74,12 +88,14 @@ func (t *Tool) Run(ctx context.Context, rawArgs json.RawMessage) (schema.Observa
 		return schema.Observation{}, fmt.Errorf("connect websocket: %w", err)
 	}
 	defer conn.Close()
-	applyConnDeadline(ctx, conn)
+	tools.ApplyConnDeadline(ctx, conn)
 
 	if err := writeHandshake(conn, parsed, key, args.Headers); err != nil {
 		return schema.Observation{}, fmt.Errorf("write websocket handshake: %w", err)
 	}
-	response, err := http.ReadResponse(bufio.NewReader(conn), nil)
+	// 握手后的数据帧必须复用同一个 reader，否则缓冲里的帧字节会丢失。
+	reader := bufio.NewReader(conn)
+	response, err := http.ReadResponse(reader, nil)
 	if err != nil {
 		return schema.Observation{}, fmt.Errorf("read websocket handshake response: %w", err)
 	}
@@ -119,19 +135,120 @@ func (t *Tool) Run(ctx context.Context, rawArgs json.RawMessage) (schema.Observa
 	if !success {
 		summary = fmt.Sprintf("WebSocket %s handshake returned 101 but validation failed in %dms", args.URL, latencyMS)
 	}
+	data := map[string]any{
+		"url":                   args.URL,
+		"status":                response.StatusCode,
+		"handshake_success":     success,
+		"latency_ms":            latencyMS,
+		"sec_websocket_accept":  actualAccept,
+		"expected_accept_match": success,
+	}
+
+	if args.Ping && success {
+		// ping/pong 失败不是工具错误：握手成功但消息通路不通本身就是关键证据。
+		pongLatencyMS, err := verifyPingPong(conn, reader)
+		if err != nil {
+			data["ping_pong_ok"] = false
+			data["ping_error"] = tools.RedactSensitive(err.Error())
+			summary += "; ping/pong failed"
+		} else {
+			data["ping_pong_ok"] = true
+			data["pong_latency_ms"] = pongLatencyMS
+			summary += fmt.Sprintf("; ping/pong verified in %dms", pongLatencyMS)
+		}
+	}
 
 	return schema.Observation{
 		Tool:    Name,
 		Summary: summary,
-		Data: map[string]any{
-			"url":                   args.URL,
-			"status":                response.StatusCode,
-			"handshake_success":     success,
-			"latency_ms":            latencyMS,
-			"sec_websocket_accept":  actualAccept,
-			"expected_accept_match": success,
-		},
+		Data:    data,
 	}, nil
+}
+
+// verifyPingPong 在握手成功后发送一帧协议层 ping 并等待 pong，
+// 验证消息通路是否可用，而不发送任何业务数据帧。
+func verifyPingPong(conn net.Conn, reader *bufio.Reader) (int64, error) {
+	startedAt := time.Now()
+	if err := writePingFrame(conn); err != nil {
+		return 0, fmt.Errorf("write ping frame: %w", err)
+	}
+	// 服务端可能先推送欢迎或业务帧；跳过有限个非 pong 帧后再判失败。
+	for range 8 {
+		opcode, payloadLen, err := readFrameHeader(reader)
+		if err != nil {
+			return 0, fmt.Errorf("read frame: %w", err)
+		}
+		if err := discardFramePayload(reader, payloadLen); err != nil {
+			return 0, fmt.Errorf("read frame payload: %w", err)
+		}
+		switch opcode {
+		case 0xA: // pong
+			latency := time.Since(startedAt).Milliseconds()
+			if latency < 0 {
+				latency = 0
+			}
+			return latency, nil
+		case 0x8: // close
+			return 0, fmt.Errorf("server closed connection before pong")
+		}
+	}
+	return 0, fmt.Errorf("no pong within first 8 frames")
+}
+
+func writePingFrame(conn net.Conn) error {
+	var key [4]byte
+	if _, err := rand.Read(key[:]); err != nil {
+		return err
+	}
+	payload := []byte("ping")
+	frame := make([]byte, 0, 2+4+len(payload))
+	// FIN|ping opcode；客户端帧必须置 mask 位并用 4 字节掩码异或负载（RFC 6455）。
+	frame = append(frame, 0x89, byte(0x80|len(payload)))
+	frame = append(frame, key[:]...)
+	for i, b := range payload {
+		frame = append(frame, b^key[i%4])
+	}
+	_, err := conn.Write(frame)
+	return err
+}
+
+func readFrameHeader(reader *bufio.Reader) (byte, int64, error) {
+	header := make([]byte, 2)
+	if _, err := io.ReadFull(reader, header); err != nil {
+		return 0, 0, err
+	}
+	opcode := header[0] & 0x0F
+	masked := header[1]&0x80 != 0
+	length := int64(header[1] & 0x7F)
+	switch length {
+	case 126:
+		extended := make([]byte, 2)
+		if _, err := io.ReadFull(reader, extended); err != nil {
+			return 0, 0, err
+		}
+		length = int64(binary.BigEndian.Uint16(extended))
+	case 127:
+		extended := make([]byte, 8)
+		if _, err := io.ReadFull(reader, extended); err != nil {
+			return 0, 0, err
+		}
+		length = int64(binary.BigEndian.Uint64(extended))
+	}
+	if masked {
+		if _, err := io.CopyN(io.Discard, reader, 4); err != nil {
+			return 0, 0, err
+		}
+	}
+	return opcode, length, nil
+}
+
+func discardFramePayload(reader *bufio.Reader, length int64) error {
+	const maxFrameBytes = 1 << 20
+	if length < 0 || length > maxFrameBytes {
+		return fmt.Errorf("frame payload length %d exceeds limit", length)
+	}
+	_, err := io.CopyN(io.Discard, reader, length)
+	return err
 }
 
 func dial(ctx context.Context, parsed *url.URL, addr string) (net.Conn, error) {
@@ -213,25 +330,4 @@ func isProtectedHeader(name string) bool {
 func websocketAccept(key string) string {
 	hash := sha1.Sum([]byte(key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"))
 	return base64.StdEncoding.EncodeToString(hash[:])
-}
-
-func applyConnDeadline(ctx context.Context, conn net.Conn) {
-	deadline, ok := ctx.Deadline()
-	if !ok {
-		deadline = time.Now().Add(5 * time.Second)
-	}
-	_ = conn.SetDeadline(deadline)
-}
-
-func Spec() tools.ToolSpec {
-	return tools.ToolSpec{
-		Name:        Name,
-		Description: "Attempt a WebSocket connection and report handshake success or failure.",
-		Schema: tools.ToolSchema{
-			Properties: map[string]tools.ArgSpec{
-				"url":     {Type: "string", Required: true, Description: "WebSocket URL to dial."},
-				"headers": {Type: "object", Description: "Optional headers for the WebSocket handshake."},
-			},
-		},
-	}
 }

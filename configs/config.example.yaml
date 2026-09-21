@@ -9,12 +9,18 @@ policy:
     - http_check
     - log_read
     - redis_ping
+    - redis_check
+    - redis_scan
+    - kafka_check
     - postgres_ping
     - postgres_check
     - websocket_check
     - docker_ps
     - docker_inspect
     - docker_logs
+    - docker_stats
+    - docker_probe
+    - smoke_run
   allowed_log_dirs:
     - ./testdata/logs
   allowed_hosts:
@@ -22,10 +28,16 @@ policy:
     - 127.0.0.1
     - "::1"
   # Docker 工具只能读取这里明确列出的容器，不能执行任意 docker 命令。
+  # redis_scan 只允许查询这些前缀下的键（SCAN+TTL），防止业务数据进入模型上下文。
+  redis_key_prefixes:
+    - "presence:"
+    - "auth:refresh:"
+    - "user:profile:"
   allowed_containers:
     - chat-backend
     - chat-frontend
     - chat-postgres
+    - chat-kafka
     - chat-redis-compose
 
 paths:
@@ -34,7 +46,17 @@ paths:
 
 targets:
   backend_base_url: http://localhost:8080
+  # http_check 允许 POST 复现的诊断地址；GET/HEAD 不受此限制。
+  allowed_post_urls:
+    - http://localhost:8080/v1/user/login
   postgres_dsn: postgres://postgres:postgres@localhost:5432/chat_proj?sslmode=disable
   redis_addr: localhost:6379
+  kafka_addr: localhost:29092
+  kafka_topic: chat.events
   websocket_url: ws://localhost:8080/v1/ws
   log_file: ./testdata/logs/chat_proj_error.log
+  # smoke_run 合成事务：以测试账号执行真实业务写入验证消息链路。
+  # 不配置则该工具不存在；只应指向可丢弃的本地/测试环境。
+  smoke_command: ["go", "run", "./smoketest"]
+  smoke_dir: /path/to/go-chat
+  smoke_timeout: 120s

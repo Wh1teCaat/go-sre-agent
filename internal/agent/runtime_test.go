@@ -52,7 +52,8 @@ func TestRuntimeRunsToolThenFinalAction(t *testing.T) {
 			Type:           "final",
 			ThoughtSummary: "health evidence is enough",
 			Final: &schema.Diagnosis{
-				Summary: "backend is alive",
+				Summary:   "backend is alive",
+				RootCause: &schema.RootCause{Status: "undetermined"},
 				Evidence: []schema.Evidence{
 					{Step: 1, Tool: "http_check", Summary: "backend returned 200"},
 				},
@@ -172,7 +173,8 @@ func TestRuntimeDerivesLLMObservationsFromTraceStore(t *testing.T) {
 				Type:           schema.ActionTypeFinal,
 				ThoughtSummary: "seeded observation is enough",
 				Final: &schema.Diagnosis{
-					Summary: "done",
+					Summary:   "done",
+					RootCause: &schema.RootCause{Status: "undetermined"},
 					Evidence: []schema.Evidence{
 						{Step: 1, Tool: "http_check", Summary: "seeded observation from trace"},
 					},
@@ -296,7 +298,8 @@ func TestRuntimeSetsPlanWithoutConsumingStep(t *testing.T) {
 				Type:           schema.ActionTypeFinal,
 				ThoughtSummary: "计划项已有证据",
 				Final: &schema.Diagnosis{
-					Summary: "后端服务存活",
+					Summary:   "后端服务存活",
+					RootCause: &schema.RootCause{Status: "undetermined"},
 					Evidence: []schema.Evidence{
 						{Step: 1, Tool: "http_check", Summary: "backend returned 200"},
 					},
@@ -368,8 +371,9 @@ func TestRuntimeRejectsDuplicateSuccessfulToolCall(t *testing.T) {
 		{
 			Type: schema.ActionTypeFinal,
 			Final: &schema.Diagnosis{
-				Summary:  "已有检查结果，无需重复调用。",
-				Evidence: []schema.Evidence{{Step: 1, Tool: "http_check"}},
+				Summary:   "已有检查结果，无需重复调用。",
+				RootCause: &schema.RootCause{Status: "undetermined"},
+				Evidence:  []schema.Evidence{{Step: 1, Tool: "http_check"}},
 			},
 		},
 	}}
@@ -409,7 +413,8 @@ func TestRuntimeAppliesToolArgOverridesAndRedactsTraceArgs(t *testing.T) {
 			Type:           schema.ActionTypeFinal,
 			ThoughtSummary: "postgres check is enough",
 			Final: &schema.Diagnosis{
-				Summary: "done",
+				Summary:   "done",
+				RootCause: &schema.RootCause{Status: "undetermined"},
 				Evidence: []schema.Evidence{
 					{Step: 1, Tool: tool.Spec().Name, Summary: "postgres checked"},
 				},
@@ -462,7 +467,8 @@ func TestRuntimeContinuesStepNumberAfterExistingTrace(t *testing.T) {
 				Type:           schema.ActionTypeFinal,
 				ThoughtSummary: "existing evidence is enough",
 				Final: &schema.Diagnosis{
-					Summary: "done",
+					Summary:   "done",
+					RootCause: &schema.RootCause{Status: "undetermined"},
 					Evidence: []schema.Evidence{
 						{Step: 1, Tool: "http_check", Summary: "backend returned 200"},
 					},
@@ -646,7 +652,8 @@ func TestRuntimeContinuesAfterToolErrorAndPassesFailureObservation(t *testing.T)
 				Type:           schema.ActionTypeFinal,
 				ThoughtSummary: "tool failure evidence is enough",
 				Final: &schema.Diagnosis{
-					Summary: "backend health check failed, use the tool error as evidence",
+					Summary:   "backend health check failed, use the tool error as evidence",
+					RootCause: &schema.RootCause{Status: "undetermined"},
 					Evidence: []schema.Evidence{
 						{Step: 1, Tool: "http_check", Summary: "connection refused"},
 					},

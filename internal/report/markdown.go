@@ -35,6 +35,19 @@ func Markdown(input Input) string {
 		b.WriteString("\n\n")
 	}
 
+	if rootCause := input.Diagnosis.RootCause; rootCause != nil {
+		// 根因状态放在证据之前：读者先看到结论强度，再核对支撑证据。
+		b.WriteString("## Root Cause\n\n")
+		b.WriteString(fmt.Sprintf("- Status: `%s`\n", rootCause.Status))
+		if rootCause.Statement != "" {
+			b.WriteString("- Statement: " + rootCause.Statement + "\n")
+		}
+		for _, evidence := range rootCause.Evidence {
+			b.WriteString(fmt.Sprintf("- Evidence: Step %d `%s`\n", evidence.Step, evidence.Tool))
+		}
+		b.WriteString("\n")
+	}
+
 	verifiedEvidence, filteredEvidence := traceBackedEvidence(input)
 	if len(verifiedEvidence) > 0 {
 		b.WriteString("## Evidence\n\n")

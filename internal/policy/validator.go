@@ -130,72 +130,46 @@ func (v *Validator) ValidateFinalEvidence(diagnosis *schema.Diagnosis, entries [
 			}
 		}
 	}
-	return validateEvidenceLanguage(diagnosis, entries)
+	return validateRootCause(diagnosis, entries)
 }
 
-// validateEvidenceLanguage catches a few high-impact conclusions that the
-// observed generic auth and health signals cannot support.
-func validateEvidenceLanguage(diagnosis *schema.Diagnosis, entries []trace.Entry) error {
-	claims := diagnosis.Summary + "\n" + strings.Join(diagnosis.Recommendations, "\n")
-	traceText := ""
-	for _, entry := range entries {
-		data, _ := json.Marshal(entry.Result.Data)
-		traceText += "\n" + strings.ToLower(entry.Result.Summary+" "+entry.Result.Error+" "+entry.Error+" "+string(data))
-	}
-
-	if strings.Contains(traceText, "wrong_password") || strings.Contains(traceText, "invalid email or password") {
-		if claim := unsupportedClaim(claims, []string{
-			"根因表现一致", "根因相同", "根因一致", "密码校验失败", "密码验证失败",
-			"凭证校验失败", "凭证不匹配", "符合预期", "预期认证行为", "无需修复",
-		}); claim != "" {
-			return fmt.Errorf("generic credential response does not support claim %q; state that the root cause is undetermined and avoid expected/no-fix claims", claim)
+// validateRootCause 校验最终诊断的结构化根因声明。结论强度由显式 status 表达
+// 并绑定 trace 证据，policy 不解析自然语言措辞；措辞层面的语义约束由 skill 教给模型。
+func validateRootCause(diagnosis *schema.Diagnosis, entries []trace.Entry) error {
+	rootCause := diagnosis.RootCause
+	if rootCause == nil {
+		// 有证据的诊断必须显式声明根因状态，禁止只在 summary 里含混断言。
+		if len(diagnosis.Evidence) > 0 {
+			return fmt.Errorf(`final diagnosis requires root_cause; declare status "identified", "suspected", or "undetermined"`)
 		}
+		return nil
 	}
-
-	healthUnverified := (strings.Contains(traceText, "/health") && strings.Contains(traceText, "401")) ||
-		strings.Contains(traceText, "health=none") || strings.Contains(traceText, `"health":""`)
-	if healthUnverified {
-		if claim := unsupportedClaim(claims, []string{
-			"系统正常", "系统运行正常", "核心组件运行正常", "所有核心组件", "所有核心依赖",
-			"组件状态均正常", "服务健康", "应用健康正常", "无需进一步排查服务可用性",
-			"非服务故障",
-		}); claim != "" {
-			return fmt.Errorf("unverified health evidence does not support claim %q; scope each status and mark application/container health unverified", claim)
+	switch rootCause.Status {
+	case "identified", "suspected":
+		if strings.TrimSpace(rootCause.Statement) == "" {
+			return fmt.Errorf("root cause status %q requires statement", rootCause.Status)
 		}
-	}
-	if strings.Contains(traceText, `"checked_tables"`) {
-		if claim := unsupportedClaim(claims, []string{"表结构正常", "表结构完整", "数据结构正常"}); claim != "" {
-			return fmt.Errorf("table existence evidence does not support claim %q; report only SQL connectivity and whether the requested table exists", claim)
+		if rootCause.Status == "identified" && len(rootCause.Evidence) == 0 {
+			return fmt.Errorf(`root cause status "identified" requires evidence; use "suspected" or "undetermined" without direct evidence`)
 		}
+	case "undetermined":
+	default:
+		return fmt.Errorf("unsupported root cause status %q", rootCause.Status)
 	}
-	if strings.Contains(traceText, "connection refused") {
-		if claim := unsupportedClaim(claims, []string{"无服务监听", "无进程监听", "服务未监听", "服务未启动", "防火墙拦截", "防火墙拒绝", "网络不可达"}); claim != "" {
-			return fmt.Errorf("connection refused does not support cause claim %q; report only that the connection attempt was refused and the cause is undetermined", claim)
+	if err := validateEvidenceRefs(rootCause.Evidence, entries); err != nil {
+		return err
+	}
+	// 与 coverage 相同的约束：根因引用的证据必须同时出现在 final.evidence 中。
+	finalEvidence := make(map[string]struct{}, len(diagnosis.Evidence))
+	for _, evidence := range diagnosis.Evidence {
+		finalEvidence[schema.EvidenceKey(evidence.Step, evidence.Tool)] = struct{}{}
+	}
+	for _, evidence := range rootCause.Evidence {
+		if _, ok := finalEvidence[schema.EvidenceKey(evidence.Step, evidence.Tool)]; !ok {
+			return fmt.Errorf("root cause references evidence step %d tool %q not present in final evidence", evidence.Step, evidence.Tool)
 		}
 	}
 	return nil
-}
-
-func unsupportedClaim(text string, phrases []string) string {
-	for _, clause := range strings.FieldsFunc(text, func(r rune) bool {
-		return strings.ContainsRune("，,。；;！!\n", r)
-	}) {
-		for _, phrase := range phrases {
-			if strings.Contains(clause, phrase) && !containsAny(clause, "不能", "无法", "不足", "未能", "不应", "不可断言", "不可确定", "不可证明", "不可认为", "不代表", "不证明", "未确定", "待验证") {
-				return strings.TrimSpace(clause)
-			}
-		}
-	}
-	return ""
-}
-
-func containsAny(text string, values ...string) bool {
-	for _, value := range values {
-		if strings.Contains(text, value) {
-			return true
-		}
-	}
-	return false
 }
 
 // ValidateFinalCoverage 校验 final 是否覆盖当前 plan。

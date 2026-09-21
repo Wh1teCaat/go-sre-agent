@@ -10,12 +10,19 @@ type diagnoseOptions struct {
 	Goal              string
 	ConfigPath        string
 	BackendBaseURL    string
+	AllowedPostURLs   []string
 	LogFile           string
 	AllowedLogDirs    []string
 	AllowedHosts      []string
 	AllowedContainers []string
+	RedisKeyPrefixes  []string
 	PostgresDSN       string
 	RedisAddr         string
+	KafkaAddr         string
+	KafkaTopic        string
+	SmokeCommand      []string
+	SmokeDir          string
+	SmokeTimeout      time.Duration
 	WebSocketURL      string
 	MaxSteps          int
 	LLMTimeout        time.Duration

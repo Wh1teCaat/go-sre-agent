@@ -33,7 +33,17 @@ type endpoint struct {
 
 func NewPing() *PingTool { return &PingTool{} }
 
-func (t *PingTool) Spec() tools.ToolSpec { return PingSpec() }
+func (t *PingTool) Spec() tools.ToolSpec {
+	return tools.ToolSpec{
+		Name:        PingName,
+		Description: "Open a PostgreSQL connection and perform a lightweight startup-message reachability check.",
+		Schema: tools.ToolSchema{
+			Properties: map[string]tools.ArgSpec{
+				"dsn": {Type: "string", Required: true, Description: "PostgreSQL connection string."},
+			},
+		},
+	}
+}
 
 func (t *PingTool) Run(ctx context.Context, rawArgs json.RawMessage) (schema.Observation, error) {
 	var args PingArgs
@@ -51,7 +61,7 @@ func (t *PingTool) Run(ctx context.Context, rawArgs json.RawMessage) (schema.Obs
 		return schema.Observation{}, fmt.Errorf("connect postgres: %w", err)
 	}
 	defer conn.Close()
-	applyConnDeadline(ctx, conn)
+	tools.ApplyConnDeadline(ctx, conn)
 
 	// 这里不引入完整 PostgreSQL 驱动，也不执行 SQL。
 	// startup message 足够验证 TCP 可达、协议响应和认证阶段是否能推进。
@@ -221,25 +231,5 @@ func readServerResponse(conn net.Conn) (string, error) {
 		return "error_response", nil
 	default:
 		return fmt.Sprintf("message:%c", messageType[0]), nil
-	}
-}
-
-func applyConnDeadline(ctx context.Context, conn net.Conn) {
-	deadline, ok := ctx.Deadline()
-	if !ok {
-		deadline = time.Now().Add(5 * time.Second)
-	}
-	_ = conn.SetDeadline(deadline)
-}
-
-func PingSpec() tools.ToolSpec {
-	return tools.ToolSpec{
-		Name:        PingName,
-		Description: "Open a PostgreSQL connection and perform a lightweight startup-message reachability check.",
-		Schema: tools.ToolSchema{
-			Properties: map[string]tools.ArgSpec{
-				"dsn": {Type: "string", Required: true, Description: "PostgreSQL connection string."},
-			},
-		},
 	}
 }

@@ -59,7 +59,6 @@ func (r *Runtime) Run(ctx context.Context, goal string) (*schema.Diagnosis, erro
 
 		request := llm.Request{
 			Goal:          goal,
-			Mode:          "decision",
 			Step:          step,
 			TargetContext: r.config.TargetContext,
 			Plan:          clonePlan(r.plan),
@@ -99,9 +98,7 @@ func (r *Runtime) Run(ctx context.Context, goal string) (*schema.Diagnosis, erro
 			return action.Final, nil
 		case schema.ActionTypeToolCall:
 			// 工具失败也会写入 trace/observation，下一轮交给 LLM 决定如何继续。
-			if err := r.executeTool(ctx, step, action, actionMeta); err != nil {
-				continue
-			}
+			r.executeTool(ctx, step, action, actionMeta)
 		}
 	}
 
@@ -123,7 +120,6 @@ func addLLMMeta(total *llmMeta, next llmMeta) {
 }
 
 func (r *Runtime) requestValidPlan(ctx context.Context, request llm.Request) (*schema.Plan, llmMeta, error) {
-	request.Mode = "plan"
 	meta := llmMeta{StartedAt: time.Now()}
 	var lastPlan *schema.Plan
 	var lastErr error
@@ -380,26 +376,30 @@ func validateNoDuplicateToolCall(action schema.Action, entries []trace.Entry) er
 }
 
 // executeTool 在受控超时内运行工具，并把成功或失败都写入 trace。
-// 工具失败不会中断整个诊断链路，下一步由 LLM 基于失败 observation 决策。
-func (r *Runtime) executeTool(ctx context.Context, step int, action schema.Action, meta llmMeta) error {
-	tool, ok := r.registry.Get(action.Tool)
-	if !ok {
-		return fmt.Errorf("tool %q is not registered", action.Tool)
-	}
-
+// 工具失败（包括工具未注册）不会中断整个诊断链路，下一步由 LLM 基于失败 observation 决策。
+func (r *Runtime) executeTool(ctx context.Context, step int, action schema.Action, meta llmMeta) {
 	args := map[string]any{}
 	_ = json.Unmarshal(action.Args, &args)
 	traceArgs := redactTraceArgs(args)
 
 	startedAt := time.Now()
-	toolCtx := ctx
-	if r.config.ToolTimeout > 0 {
-		var cancel context.CancelFunc
-		toolCtx, cancel = context.WithTimeout(ctx, r.config.ToolTimeout)
-		defer cancel()
+	var observation schema.Observation
+	var err error
+	if tool, ok := r.registry.Get(action.Tool); ok {
+		timeout := r.config.ToolTimeout
+		if specTimeout := tool.Spec().Timeout; specTimeout > 0 {
+			timeout = specTimeout
+		}
+		toolCtx := ctx
+		if timeout > 0 {
+			var cancel context.CancelFunc
+			toolCtx, cancel = context.WithTimeout(ctx, timeout)
+			defer cancel()
+		}
+		observation, err = tool.Run(toolCtx, action.Args)
+	} else {
+		err = fmt.Errorf("tool %q is not registered", action.Tool)
 	}
-
-	observation, err := tool.Run(toolCtx, action.Args)
 	if err != nil {
 		// 即使工具返回 error，也尽量把工具已经构造出的 observation 保留下来。
 		// 例如 HTTP 连接失败、日志路径越界等失败本身也是后续诊断的证据。
@@ -437,11 +437,6 @@ func (r *Runtime) executeTool(ctx context.Context, step int, action schema.Actio
 	}
 	// trace 是报告证据和下一轮 observation 的共同来源，因此成功/失败都必须落盘到 store。
 	r.trace.Append(entry)
-
-	if err != nil {
-		return err
-	}
-	return nil
 }
 
 func redactObservation(observation schema.Observation) schema.Observation {

@@ -1,0 +1,66 @@
+{
+  "run_id": "run_legacy_v1",
+  "goal": "诊断脱敏示例服务的登录错误",
+  "status": "completed",
+  "plan": {
+    "reason": "检查 HTTP 响应",
+    "items": [
+      {
+        "id": "login",
+        "goal": "检查登录接口",
+        "status": "done"
+      }
+    ]
+  },
+  "diagnosis": {
+    "summary": "登录接口返回 500；需继续结合当前证据验证根因。",
+    "evidence": [
+      {
+        "step": 1,
+        "tool": "http_check",
+        "summary": "模型摘要不应直接作为报告证据"
+      }
+    ],
+    "coverage": [
+      {
+        "plan_item_id": "login",
+        "status": "done",
+        "evidence": [
+          {
+            "step": 1,
+            "tool": "http_check",
+            "summary": "历史模型摘要"
+          }
+        ]
+      }
+    ],
+    "recommendations": [
+      "检查应用日志与数据库连接配置。"
+    ]
+  },
+  "trace": [
+    {
+      "Step": 1,
+      "ActionType": "tool_call",
+      "ThoughtSummary": "检查登录接口状态",
+      "ToolName": "http_check",
+      "Model": "mock",
+      "LLMDuration": 2000000,
+      "LLMAttempts": 1,
+      "Args": {
+        "url": "https://service.example.invalid/v1/user/login",
+        "method": "POST"
+      },
+      "Result": {
+        "step": 1,
+        "tool": "http_check",
+        "summary": "POST https://service.example.invalid/v1/user/login returned 500"
+      },
+      "Error": "",
+      "Duration": 86000000,
+      "StartedAt": "2026-07-12T04:00:00Z"
+    }
+  ],
+  "created_at": "2026-07-12T04:00:00Z",
+  "updated_at": "2026-07-12T04:00:01Z"
+}

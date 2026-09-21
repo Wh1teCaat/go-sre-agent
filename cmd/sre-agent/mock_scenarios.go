@@ -27,7 +27,10 @@ func scenarioActions(mockScenario string, cfg diagnoseOptions) ([]schema.Action,
 			},
 		}, nil
 	case "login-500":
-		loginURL := loginURLForDiagnose(cfg)
+		loginURL := ""
+		if len(cfg.AllowedPostURLs) > 0 {
+			loginURL = cfg.AllowedPostURLs[0]
+		}
 		return []schema.Action{
 			{
 				Type:           schema.ActionTypeToolCall,
@@ -50,6 +53,10 @@ func scenarioActions(mockScenario string, cfg diagnoseOptions) ([]schema.Action,
 				ThoughtSummary: "HTTP 状态和日志证据已足够生成初步诊断",
 				Final: &schema.Diagnosis{
 					Summary: "登录接口返回 500，当前诊断链路已完成 HTTP 复现和错误日志读取。请结合下方证据确认具体异常。",
+					RootCause: &schema.RootCause{
+						Status:    "undetermined",
+						Statement: "已确认接口异常并读取错误日志，但当前证据不足以定位具体根因。",
+					},
 					Evidence: []schema.Evidence{
 						{Step: 1, Tool: httpcheck.Name, Summary: "登录接口返回 500"},
 						{Step: 2, Tool: logread.Name, Summary: "日志包含 ERROR"},
@@ -80,6 +87,10 @@ func scenarioActions(mockScenario string, cfg diagnoseOptions) ([]schema.Action,
 				ThoughtSummary: "依赖连通性证据已收集完成",
 				Final: &schema.Diagnosis{
 					Summary: "依赖连通性检查完成。当前诊断链路已检查 PostgreSQL 协议层和 Redis PING。",
+					RootCause: &schema.RootCause{
+						Status:    "undetermined",
+						Statement: "本场景仅验证依赖连通性，不构成根因结论。",
+					},
 					Evidence: []schema.Evidence{
 						{Step: 1, Tool: postgres.PingName, Summary: "PostgreSQL 协议层可达"},
 						{Step: 2, Tool: redis.Name, Summary: "Redis 返回 PONG"},
@@ -114,6 +125,10 @@ func scenarioActions(mockScenario string, cfg diagnoseOptions) ([]schema.Action,
 				ThoughtSummary: "WebSocket 握手和日志证据已收集完成",
 				Final: &schema.Diagnosis{
 					Summary: "WebSocket 诊断链路已完成。当前链路已尝试握手并读取 websocket 相关日志。",
+					RootCause: &schema.RootCause{
+						Status:    "undetermined",
+						Statement: "已记录握手结果和相关日志，根因需结合具体证据判定。",
+					},
 					Evidence: []schema.Evidence{
 						{Step: 1, Tool: websocket.Name, Summary: "WebSocket 握手失败或成功状态已记录"},
 						{Step: 2, Tool: logread.Name, Summary: "日志包含 websocket 错误"},
