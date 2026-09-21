@@ -1,7 +1,7 @@
 # 阶段 1：会话 Markdown 记忆
 
-本阶段只实现同一排障问题内的连续上下文。它不建立跨会话知识库，也不读取
-`memories/`、`MEMORY.md` 或 `rollout_summaries/`；这些属于阶段 5。
+会话 Markdown 记忆只实现同一排障问题内的连续上下文。跨会话知识已由阶段 5 的
+`memories/` 独立管理；它不会改变本文件所述的 session 隔离和恢复语义。
 
 ## 文件与职责
 
@@ -87,4 +87,5 @@ go run ./cmd/sre-agent diagnose \
 ```
 
 该 flag 会用 run JSON 重建并覆盖生成的 `memory.md`。需要保留人工笔记时，先
-复制到仓库外的独立文件。阶段 1 尚未提供跨会话知识索引的重建命令。
+复制到仓库外的独立文件。跨会话知识的索引重建、检索和人工编辑规则见
+[cross-session-memory.md](cross-session-memory.md)。

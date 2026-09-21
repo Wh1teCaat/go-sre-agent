@@ -43,6 +43,8 @@ type PathsConfig struct {
 }
 
 type TargetConfig struct {
+	// Service 是跨会话知识检索的服务范围标签，不得填写地址、凭据等敏感信息。
+	Service        string
 	BackendBaseURL string
 	// Environment 是 local、staging、prod 等非敏感标签；它限定会话记忆范围，
 	// 防止意外跨环境复用。
@@ -88,6 +90,7 @@ type rawConfig struct {
 		ReportDir  string `yaml:"report_dir"`
 	} `yaml:"paths"`
 	Targets struct {
+		Service         string   `yaml:"service"`
 		BackendBaseURL  string   `yaml:"backend_base_url"`
 		Environment     string   `yaml:"environment"`
 		AllowedPostURLs []string `yaml:"allowed_post_urls"`
@@ -158,6 +161,7 @@ func Default() Config {
 			SessionDir: ".sessions",
 		},
 		Targets: TargetConfig{
+			Service:        "go-chat",
 			BackendBaseURL: "http://localhost:8080",
 			Environment:    "local",
 			PostgresDSN:    "postgres://postgres:postgres@localhost:5432/chat_proj?sslmode=disable",
@@ -267,6 +271,9 @@ func Load(path string) (Config, error) {
 	}
 	if raw.Targets.BackendBaseURL != "" {
 		cfg.Targets.BackendBaseURL = raw.Targets.BackendBaseURL
+	}
+	if raw.Targets.Service != "" {
+		cfg.Targets.Service = raw.Targets.Service
 	}
 	if raw.Targets.Environment != "" {
 		cfg.Targets.Environment = raw.Targets.Environment

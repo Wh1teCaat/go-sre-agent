@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"strings"
 	"syscall"
+
+	memory "github.com/y2/go-sre-agent/internal/memory"
 )
 
 // runDiagnoseCommand 解析 diagnose 参数并执行新诊断。
@@ -61,6 +63,7 @@ func runDiagnoseCommand(args []string) {
 		RunDir:                 *runDir,
 		SessionID:              *sessionID,
 		SessionDir:             *sessionDir,
+		MemoryDir:              memory.DefaultDir,
 		Environment:            *environment,
 		OverwriteSessionMemory: *overwriteSessionMemory,
 	}, *mockScenario)
@@ -119,6 +122,7 @@ func runResumeCommand(args []string) {
 		RunID:                  *runID,
 		RunDir:                 *runDir,
 		SessionDir:             *sessionDir,
+		MemoryDir:              memory.DefaultDir,
 		Environment:            *environment,
 		OverwriteSessionMemory: *overwriteSessionMemory,
 		ConfigPath:             *configPath,

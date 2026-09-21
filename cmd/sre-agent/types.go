@@ -10,6 +10,7 @@ import (
 type diagnoseOptions struct {
 	Goal                  string
 	ConfigPath            string
+	Service               string
 	BackendBaseURL        string
 	AllowedPostURLs       []string
 	LogFile               string
@@ -34,12 +35,14 @@ type diagnoseOptions struct {
 	ContextBudgetBytes    int
 	ToolOutputBudgetBytes int
 	// Progress 仅供命令层消费 runtime 进度，不能影响诊断决策。
-	Progress               func(agent.ProgressEvent)
-	SkillPath              string
-	ToolAllowlist          []string
-	RunDir                 string
-	SessionID              string
-	SessionDir             string
+	Progress      func(agent.ProgressEvent)
+	SkillPath     string
+	ToolAllowlist []string
+	RunDir        string
+	SessionID     string
+	SessionDir    string
+	// MemoryDir 为空时不加载或更新跨会话知识；CLI 固定传入 memories。
+	MemoryDir              string
 	Environment            string
 	NewSession             bool
 	OverwriteSessionMemory bool
@@ -56,6 +59,7 @@ type resumeOptions struct {
 	RunID                  string
 	RunDir                 string
 	SessionDir             string
+	MemoryDir              string
 	Environment            string
 	OverwriteSessionMemory bool
 	ConfigPath             string
@@ -76,6 +80,8 @@ type diagnoseResult struct {
 	State                  runstore.State
 	RunDir                 string
 	SessionDir             string
+	Service                string
+	MemoryDir              string
 	Environment            string
 	OverwriteSessionMemory bool
 	ReportDir              string

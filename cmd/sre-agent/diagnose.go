@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/y2/go-sre-agent/internal/agent"
+	memory "github.com/y2/go-sre-agent/internal/memory"
 	"github.com/y2/go-sre-agent/internal/policy"
 	"github.com/y2/go-sre-agent/internal/report"
 	runstore "github.com/y2/go-sre-agent/internal/run"
@@ -76,9 +77,14 @@ func resumeDiagnosisRun(ctx context.Context, opts resumeOptions, mockScenario st
 		return diagnoseResult{}, fmt.Errorf("run %q contains a side-effecting call with unknown outcome; automatic resume is blocked, inspect the target and start a new run if another probe is required", opts.RunID)
 	}
 
+	environment := opts.Environment
+	if strings.TrimSpace(previous.Environment) != "" {
+		environment = previous.Environment
+	}
 	return executeDiagnosisRun(ctx, diagnoseOptions{
 		Goal:                   previous.Goal,
 		ConfigPath:             opts.ConfigPath,
+		Service:                previous.Service,
 		MaxSteps:               opts.MaxSteps,
 		LLMTimeout:             opts.LLMTimeout,
 		ToolTimeout:            opts.ToolTimeout,
@@ -91,7 +97,8 @@ func resumeDiagnosisRun(ctx context.Context, opts resumeOptions, mockScenario st
 		RunDir:                 runDir,
 		SessionID:              previous.SessionID,
 		SessionDir:             opts.SessionDir,
-		Environment:            opts.Environment,
+		MemoryDir:              opts.MemoryDir,
+		Environment:            environment,
 		OverwriteSessionMemory: opts.OverwriteSessionMemory,
 	}, previous.RunID, previous.CreatedAt, previous.Trace, previous.Plan, previous.Calls, mockScenario)
 }
@@ -111,12 +118,25 @@ func resumableStatus(status runstore.Status) bool {
 func executeDiagnosisRun(ctx context.Context, opts diagnoseOptions, runID string, createdAt time.Time, existingTrace []trace.Entry, existingPlan schema.Plan, existingCalls []runstore.Call, mockScenario string) (diagnoseResult, error) {
 	setup, err := initializeDiagnosis(opts, mockScenario)
 	if err != nil {
-		return diagnoseResult{RunDir: setup.config.RunDir, SessionDir: setup.config.SessionDir, Environment: setup.config.Environment, OverwriteSessionMemory: setup.config.OverwriteSessionMemory, ReportDir: setup.config.ReportDir}, err
+		return diagnoseResult{RunDir: setup.config.RunDir, SessionDir: setup.config.SessionDir, Service: setup.config.Service, MemoryDir: setup.config.MemoryDir, Environment: setup.config.Environment, OverwriteSessionMemory: setup.config.OverwriteSessionMemory, ReportDir: setup.config.ReportDir}, err
 	}
 	cfg := setup.config
 	memories, err := sessionMemoryHintsForDiagnose(cfg.SessionDir, cfg.SessionID, cfg.Environment, cfg.NewSession, cfg.OverwriteSessionMemory)
 	if err != nil {
-		return diagnoseResult{RunDir: cfg.RunDir, SessionDir: cfg.SessionDir, Environment: cfg.Environment, OverwriteSessionMemory: cfg.OverwriteSessionMemory, ReportDir: cfg.ReportDir}, err
+		return diagnoseResult{RunDir: cfg.RunDir, SessionDir: cfg.SessionDir, Service: cfg.Service, MemoryDir: cfg.MemoryDir, Environment: cfg.Environment, OverwriteSessionMemory: cfg.OverwriteSessionMemory, ReportDir: cfg.ReportDir}, err
+	}
+	if cfg.MemoryDir != "" {
+		history, err := memory.NewStore(cfg.MemoryDir).Hints(memory.Query{
+			Service:     cfg.Service,
+			Environment: cfg.Environment,
+			Goal:        cfg.Goal,
+			MaxMatches:  3,
+			MaxBytes:    12 * 1024,
+		})
+		if err != nil {
+			return diagnoseResult{RunDir: cfg.RunDir, SessionDir: cfg.SessionDir, Service: cfg.Service, MemoryDir: cfg.MemoryDir, Environment: cfg.Environment, OverwriteSessionMemory: cfg.OverwriteSessionMemory, ReportDir: cfg.ReportDir}, fmt.Errorf("load cross-session memories: %w", err)
+		}
+		memories = append(memories, history...)
 	}
 
 	taskCtx, cancel := context.WithTimeout(ctx, cfg.TaskTimeout)
@@ -125,6 +145,8 @@ func executeDiagnosisRun(ctx context.Context, opts diagnoseOptions, runID string
 	taskDeadline = taskDeadline.UTC()
 	state := runstore.State{
 		RunID:        runID,
+		Service:      cfg.Service,
+		Environment:  cfg.Environment,
 		SessionID:    cfg.SessionID,
 		Goal:         cfg.Goal,
 		Status:       runstore.StatusRunning,
@@ -135,7 +157,7 @@ func executeDiagnosisRun(ctx context.Context, opts diagnoseOptions, runID string
 		CreatedAt:    createdAt,
 		UpdatedAt:    time.Now().UTC(),
 	}
-	result := diagnoseResult{State: state, RunDir: cfg.RunDir, SessionDir: cfg.SessionDir, Environment: cfg.Environment, OverwriteSessionMemory: cfg.OverwriteSessionMemory, ReportDir: cfg.ReportDir}
+	result := diagnoseResult{State: state, RunDir: cfg.RunDir, SessionDir: cfg.SessionDir, Service: cfg.Service, MemoryDir: cfg.MemoryDir, Environment: cfg.Environment, OverwriteSessionMemory: cfg.OverwriteSessionMemory, ReportDir: cfg.ReportDir}
 	store := runstore.NewStore(cfg.RunDir)
 	if err := store.Save(state); err != nil {
 		return result, fmt.Errorf("checkpoint initial run state: %w", err)

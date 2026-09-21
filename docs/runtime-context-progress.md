@@ -92,4 +92,5 @@ stderr 的正常输出格式如下：
 - 旧 run 不需要迁移；既有 trace 会在读取模型上下文时按同样预算处理。
 - `tool_call`、原有单工具 checkpoint 和恢复行为保持兼容。
 - 当前实现按元数据和显式 `tool_calls` 执行有限并行，不会依据自然语言自动判断可并行性。
-- 本阶段不写入 `memories/`，也没有实现跨会话知识检索或索引。
+- 跨会话知识检索和索引由后续阶段的独立 `memories/` 模块实现；其固定读取预算与证据边界见
+  [cross-session-memory.md](cross-session-memory.md)。

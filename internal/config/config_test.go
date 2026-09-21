@@ -35,6 +35,7 @@ paths:
   session_dir: /tmp/sre-agent-sessions
   report_dir: /tmp/sre-agent-reports
 targets:
+  service: go-chat-staging
   backend_base_url: http://localhost:9000
   environment: staging
   postgres_dsn: postgres://app:secret@localhost:5432/chat_proj?sslmode=disable
@@ -95,6 +96,9 @@ targets:
 	if cfg.Targets.Environment != "staging" {
 		t.Fatalf("environment = %q, want staging", cfg.Targets.Environment)
 	}
+	if cfg.Targets.Service != "go-chat-staging" {
+		t.Fatalf("service = %q, want go-chat-staging", cfg.Targets.Service)
+	}
 }
 
 func TestDefaultAllowsLocalDiagnosticHosts(t *testing.T) {
@@ -108,8 +112,8 @@ func TestDefaultAllowsLocalDiagnosticHosts(t *testing.T) {
 	if cfg.Agent.MaxToolCalls != 24 || cfg.Agent.MaxParallelTools != 2 || cfg.Agent.ContextBudgetBytes != 48*1024 || cfg.Agent.ToolOutputBudgetBytes != 8*1024 {
 		t.Fatalf("default runtime limits = %#v", cfg.Agent)
 	}
-	if cfg.Paths.SessionDir != ".sessions" || cfg.Targets.Environment != "local" {
-		t.Fatalf("default session settings = %#v / %q", cfg.Paths, cfg.Targets.Environment)
+	if cfg.Paths.SessionDir != ".sessions" || cfg.Targets.Environment != "local" || cfg.Targets.Service != "go-chat" {
+		t.Fatalf("default session settings = %#v / %q / %q", cfg.Paths, cfg.Targets.Environment, cfg.Targets.Service)
 	}
 
 	for _, want := range []string{"localhost", "127.0.0.1", "::1"} {

@@ -32,6 +32,10 @@ const (
 // 它保存 trace 和最终 diagnosis，供后续 status/report/resume 使用。
 type State struct {
 	RunID string `json:"run_id"`
+	// Service 和 Environment 固定本次运行的跨会话知识范围。旧运行没有这些字段时，
+	// 读取逻辑会标注为 unknown，不会猜测其适用范围。
+	Service     string `json:"service,omitempty"`
+	Environment string `json:"environment,omitempty"`
 	// SessionID 可选地将本 run 关联到阶段一会话；省略该字段可兼容会话记忆出现前
 	// 写入的 run。
 	SessionID string            `json:"session_id,omitempty"`

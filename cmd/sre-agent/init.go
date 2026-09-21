@@ -168,6 +168,7 @@ func resolveDiagnosisConfig(opts diagnoseOptions) (diagnoseOptions, error) {
 	}
 	resolved := diagnoseOptions{
 		Goal:                   opts.Goal,
+		Service:                cfg.Targets.Service,
 		BackendBaseURL:         cfg.Targets.BackendBaseURL,
 		AllowedPostURLs:        allowedPostURLs,
 		LogFile:                cfg.Targets.LogFile,
@@ -196,6 +197,7 @@ func resolveDiagnosisConfig(opts diagnoseOptions) (diagnoseOptions, error) {
 		RunDir:                 cfg.Paths.RunDir,
 		SessionID:              opts.SessionID,
 		SessionDir:             cfg.Paths.SessionDir,
+		MemoryDir:              opts.MemoryDir,
 		Environment:            cfg.Targets.Environment,
 		NewSession:             opts.NewSession,
 		OverwriteSessionMemory: opts.OverwriteSessionMemory,
@@ -231,6 +233,9 @@ func resolveDiagnosisConfig(opts diagnoseOptions) (diagnoseOptions, error) {
 	}
 	if opts.SessionDir != "" {
 		resolved.SessionDir = opts.SessionDir
+	}
+	if opts.Service != "" {
+		resolved.Service = opts.Service
 	}
 	if opts.Environment != "" {
 		resolved.Environment = opts.Environment

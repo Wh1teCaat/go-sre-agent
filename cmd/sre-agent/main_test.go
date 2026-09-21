@@ -985,6 +985,8 @@ paths:
   run_dir: /configured/runs
   report_dir: /configured/reports
 targets:
+  service: configured-chat
+  environment: staging
   backend_base_url: http://configured:8080
   postgres_dsn: postgres://configured:secret@db:5432/chat_proj?sslmode=disable
   redis_addr: redis:6379
@@ -997,6 +999,7 @@ targets:
 	cfg, err := resolveDiagnosisConfig(diagnoseOptions{
 		Goal:       "diagnose",
 		ConfigPath: configPath,
+		MemoryDir:  "test-memories",
 	})
 	if err != nil {
 		t.Fatalf("resolve config: %v", err)
@@ -1004,6 +1007,9 @@ targets:
 
 	if cfg.BackendBaseURL != "http://configured:8080" {
 		t.Fatalf("backend base URL = %q, want config value", cfg.BackendBaseURL)
+	}
+	if cfg.Service != "configured-chat" || cfg.Environment != "staging" || cfg.MemoryDir != "test-memories" {
+		t.Fatalf("memory scope = %q/%q/%q", cfg.Service, cfg.Environment, cfg.MemoryDir)
 	}
 	if cfg.LogFile != "/configured/logs/app.log" {
 		t.Fatalf("log file = %q, want config value", cfg.LogFile)

@@ -21,6 +21,8 @@ func main() {
 		runStatusCommand(os.Args[2:])
 	case "report":
 		runReportCommand(os.Args[2:])
+	case "memory":
+		runMemoryCommand(os.Args[2:])
 	case "llm":
 		runLLMCommand(os.Args[2:])
 	default:
@@ -37,6 +39,12 @@ func printUsageAndExit() {
 	fmt.Fprintln(os.Stderr, "       sre-agent resume --run-id <run_id> [--task-timeout 5m] [--resume-running] [--session-dir .sessions] [--environment local] [--overwrite-session-memory] [--config config.yaml]")
 	fmt.Fprintln(os.Stderr, "       sre-agent status --run-id <run_id> [--config config.yaml]")
 	fmt.Fprintln(os.Stderr, "       sre-agent report --run-id <run_id> [--config config.yaml]")
+	fmt.Fprintln(os.Stderr, "       sre-agent memory rebuild [--overwrite-generated]")
+	fmt.Fprintln(os.Stderr, "       sre-agent memory collect --run-id <run_id> [--run-dir .runs] [--config config.yaml] [--overwrite-generated]")
+	fmt.Fprintln(os.Stderr, "       sre-agent memory search --goal <goal> [--service go-chat] [--environment local]")
+	fmt.Fprintln(os.Stderr, "       sre-agent memory invalidate --run-id <run_id> --reason <reason>")
+	fmt.Fprintln(os.Stderr, "       sre-agent memory correct --run-id <run_id> --conclusion-status <status> --note <note>")
+	fmt.Fprintln(os.Stderr, "       sre-agent memory delete --run-id <run_id> --reason <reason>")
 	fmt.Fprintln(os.Stderr, "       sre-agent llm ping")
 	fmt.Fprintln(os.Stderr, "       sre-agent llm chat --message <message>")
 	os.Exit(2)

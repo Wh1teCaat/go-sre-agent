@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	memory "github.com/y2/go-sre-agent/internal/memory"
 	"github.com/y2/go-sre-agent/internal/report"
 	runstore "github.com/y2/go-sre-agent/internal/run"
 	"github.com/y2/go-sre-agent/internal/schema"
@@ -21,6 +22,10 @@ func saveDiagnosisResult(result diagnoseResult, runErr error) error {
 			persistErr = fmt.Errorf("save run state: %w", err)
 		} else if err := updateSessionForRun(result); err != nil {
 			persistErr = fmt.Errorf("save session state: %w", err)
+		} else if result.MemoryDir != "" {
+			if _, err := memory.NewStore(result.MemoryDir).UpdateForRun(result.State); err != nil {
+				persistErr = fmt.Errorf("update cross-session memories: %w", err)
+			}
 		}
 	}
 	if runErr == nil {

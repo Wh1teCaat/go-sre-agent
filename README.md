@@ -14,6 +14,7 @@
 - 对模型观测应用总量与单条输出预算，原始 trace 不受裁剪影响并保留回查引用。
 - 支持带独立 `call_id` 的有限并行只读检查，以及 stderr 实时进度输出。
 - 为同一个排障问题保存隔离的会话 Markdown 记忆，连续诊断只加载指定会话。
+- 将符合条件的已完成 run 确定性整理为按服务和环境隔离的跨会话知识；历史资料仅用于提出待验证假设。
 - 通过工具白名单、目标白名单、参数校验、超时和脱敏限制执行边界。
 - 最终报告只能引用本次运行中真实存在的工具证据。
 - 每条工具证据会保留检查执行状态、目标健康状态、目标身份、时间和脱敏后的结构化事实。
@@ -106,6 +107,8 @@ paths:
   report_dir: reports
 
 targets:
+  # 跨会话知识隔离标签，必须使用非敏感的稳定服务名。
+  service: go-chat
   environment: local
   backend_base_url: http://localhost:8080
   # http_check 允许 POST 复现的诊断地址；未配置时回退为 backend_base_url 派生的登录地址。
@@ -149,9 +152,18 @@ go run ./cmd/sre-agent diagnose --session-id <session_id> --goal "复查当前�
 
 # 根据已保存的 trace 重新生成报告
 go run ./cmd/sre-agent report --run-id <run_id>
+
+# 查询固定 memories/ 根目录中的同服务、同环境历史复盘（JSON 输出）
+go run ./cmd/sre-agent memory search --goal "Redis 连接超时"
+
+# 从已保存 run 手动收录或重建跨会话索引
+go run ./cmd/sre-agent memory collect --run-id <run_id>
+go run ./cmd/sre-agent memory rebuild
 ```
 
 会话记忆的文件结构、隔离规则和人工编辑处理见 [docs/session-memory.md](docs/session-memory.md)。
+跨会话知识的收录条件、检索预算、生命周期和人工编辑规则见
+[docs/cross-session-memory.md](docs/cross-session-memory.md)。
 上下文预算、并行工具调用和 CLI 输出流规则见
 [docs/runtime-context-progress.md](docs/runtime-context-progress.md)。
 
@@ -223,6 +235,7 @@ internal/policy/     action 和工具调用校验
 internal/tools/      诊断工具及注册表
 internal/trace/      trace 记录
 internal/run/        运行状态持久化
+internal/memory/     跨会话复盘、索引、检索与生命周期管理
 internal/report/     Markdown 报告生成
 ```
 
@@ -231,6 +244,7 @@ internal/report/     Markdown 报告生成
 - `websocket_check` 的 `ping` 仅验证协议层 ping/pong，不收发业务消息。
 - `postgres_ping` 仅检查协议层可达性；需要认证和 SQL 证据时应使用 `postgres_check`。
 - 动态诊断建议主要由模型生成。
+- 跨会话检索仅使用服务、环境和固定关键词；尚未引入向量数据库或语义知识融合。
 
 ## 路线图
 

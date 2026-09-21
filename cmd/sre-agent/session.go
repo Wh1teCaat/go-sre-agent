@@ -22,6 +22,8 @@ func prepareNewDiagnosisSession(opts diagnoseOptions, startedAt time.Time) (diag
 		return diagnoseOptions{}, err
 	}
 	opts.SessionDir = resolved.SessionDir
+	opts.Service = resolved.Service
+	opts.MemoryDir = resolved.MemoryDir
 	opts.Environment = resolved.Environment
 	sessionID := strings.TrimSpace(opts.SessionID)
 	if sessionID == "" {

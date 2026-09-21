@@ -8,25 +8,28 @@
 - `cmd/sre-agent/diagnose.go`: start/resume orchestration, task deadline, and run checkpoint wiring.
 - `cmd/sre-agent/run.go`: terminal run persistence, status lookup, and report reload.
 - `cmd/sre-agent/commands.go`: CLI flag parsing, exit handling, and output.
+- `cmd/sre-agent/memory_command.go`: 固定 `memories/` 根目录的收录、检索、重建和生命周期命令。
 - `internal/agent`: runtime loop, state, prompt boundary, execution boundary.
 - `internal/llm`: provider interface, action planner, generic chat types/config, mock provider, OpenAI-compatible/Ollama client, and Anthropic Messages client.
 - `internal/tools`: tool interface, registry, tool specs, and concrete tool packages.
 - `internal/policy`: action、计划、结构化证据、根因约束、工具白名单和参数 schema 校验。
 - `internal/trace`: per-step execution trace storage.
 - `internal/report`: markdown report generation from diagnosis and trace evidence.
+- `internal/memory`: 从已保存 run 确定性生成跨会话复盘、主题索引和受预算限制的历史提示。
 - `internal/schema`: structured action, observation, evidence, and diagnosis types.
 
 ## Runtime Loop
 
 1. Receive a user goal from CLI.
-2. Derive budget-bounded LLM-facing observation copies from the trace store; complete evidence remains in trace.
-3. Send goal, available tool specs, and observations to the LLM provider for a decision.
-4. Continue directly for a tool/final action; call `Plan` only when the decision sets `NeedsPlan`, then request the action again in the same step.
-5. Validate the returned structured action, plan adherence, evidence roles, conclusion strength, final evidence, tool allowlist, and tool args.
-6. Before and after each LLM or tool request, atomically checkpoint the run, call ID, and call state.
-7. Create a durable call ID for every selected tool. Independent read-only `tool_calls` batches run with bounded parallelism; trace/checkpoint writes remain serialized.
-8. Tool failures return as observations; the next decision may request planning or continue normal ReAct.
-9. Stop on `final`, cancellation, total-task timeout, or an error after `max_steps`.
+2. Load only the selected session memory and a budget-bounded, service/environment-scoped cross-session history; both are historical hypotheses rather than current evidence.
+3. Derive budget-bounded LLM-facing observation copies from the trace store; complete evidence remains in trace.
+4. Send goal, available tool specs, historical hints, and observations to the LLM provider for a decision.
+5. Continue directly for a tool/final action; call `Plan` only when the decision sets `NeedsPlan`, then request the action again in the same step.
+6. Validate the returned structured action, plan adherence, evidence roles, conclusion strength, final evidence, tool allowlist, and tool args.
+7. Before and after each LLM or tool request, atomically checkpoint the run, call ID, and call state.
+8. Create a durable call ID for every selected tool. Independent read-only `tool_calls` batches run with bounded parallelism; trace/checkpoint writes remain serialized.
+9. Tool failures return as observations; the next decision may request planning or continue normal ReAct.
+10. Stop on `final`, cancellation, total-task timeout, or an error after `max_steps`.
 
 ## 安全边界
 
@@ -40,6 +43,7 @@
 - `identified` root causes require a supported fault type and its minimum structured evidence; `suspected` conclusions require both support and pending verification.
 - Tool execution errors are preserved as LLM-facing observations instead of terminating the runtime loop.
 - Runtime publishes structured progress events. The CLI renders those events to stderr, while reports and machine-readable output remain on stdout.
+- 跨会话索引采用原子替换和短时写锁；索引故障不会删除已经保存的 run，且历史 Markdown 不能改变 system、工具或证据策略。
 - `log_read` only reads files under configured allowed directories.
 - `http_check` body snippets and `log_read` lines redact common password/token/api_key/secret values before they become observations.
 - `http_check` and `websocket_check` reject URLs whose host is not in configured `allowed_hosts`.

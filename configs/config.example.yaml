@@ -57,6 +57,8 @@ paths:
   report_dir: reports
 
 targets:
+  # 跨会话知识的服务范围标签；不填写地址、账号、令牌或其他敏感信息。
+  service: go-chat
   # 会话隔离标签；同一 session 不能跨环境继续。
   environment: local
   backend_base_url: http://localhost:8080
