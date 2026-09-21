@@ -22,6 +22,10 @@ func runDiagnoseCommand(args []string) {
 	llmTimeout := fs.Duration("llm-timeout", 0, "LLM request timeout")
 	toolTimeout := fs.Duration("tool-timeout", 0, "tool execution timeout")
 	taskTimeout := fs.Duration("task-timeout", 0, "whole diagnostic task timeout")
+	maxToolCalls := fs.Int("max-tool-calls", 0, "maximum tool calls in one diagnostic run")
+	maxParallelTools := fs.Int("max-parallel-tools", 0, "maximum concurrent independent read-only tool calls")
+	contextBudgetBytes := fs.Int("context-budget-bytes", 0, "maximum observation-context bytes sent to the model")
+	toolOutputBudgetBytes := fs.Int("tool-output-budget-bytes", 0, "maximum bytes from one tool observation sent to the model")
 	runDir := fs.String("run-dir", "", "override run state directory")
 	sessionID := fs.String("session-id", "", "continue an existing diagnostic session")
 	sessionDir := fs.String("session-dir", "", "override session state directory")
@@ -41,6 +45,7 @@ func runDiagnoseCommand(args []string) {
 	// CLI 层只做参数收集和退出码处理。
 	ctx, stop := commandContext()
 	defer stop()
+	progress := newCLIProgressWriter(os.Stderr)
 	result, err := startDiagnosisRun(ctx, diagnoseOptions{
 		Goal:                   *goal,
 		ConfigPath:             *configPath,
@@ -48,6 +53,11 @@ func runDiagnoseCommand(args []string) {
 		LLMTimeout:             *llmTimeout,
 		ToolTimeout:            *toolTimeout,
 		TaskTimeout:            *taskTimeout,
+		MaxToolCalls:           *maxToolCalls,
+		MaxParallelTools:       *maxParallelTools,
+		ContextBudgetBytes:     *contextBudgetBytes,
+		ToolOutputBudgetBytes:  *toolOutputBudgetBytes,
+		Progress:               progress.Report,
 		RunDir:                 *runDir,
 		SessionID:              *sessionID,
 		SessionDir:             *sessionDir,
@@ -68,6 +78,11 @@ func runDiagnoseCommand(args []string) {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
+	if *out != "" || result.ReportDir != "" {
+		fmt.Fprintln(os.Stderr, "诊断完成，报告已保存。")
+	} else {
+		fmt.Fprintln(os.Stderr, "诊断完成。")
+	}
 	fmt.Print(markdown)
 }
 
@@ -82,6 +97,10 @@ func runResumeCommand(args []string) {
 	llmTimeout := fs.Duration("llm-timeout", 0, "LLM request timeout")
 	toolTimeout := fs.Duration("tool-timeout", 0, "tool execution timeout")
 	taskTimeout := fs.Duration("task-timeout", 0, "whole diagnostic task timeout")
+	maxToolCalls := fs.Int("max-tool-calls", 0, "maximum tool calls in one diagnostic run")
+	maxParallelTools := fs.Int("max-parallel-tools", 0, "maximum concurrent independent read-only tool calls")
+	contextBudgetBytes := fs.Int("context-budget-bytes", 0, "maximum observation-context bytes sent to the model")
+	toolOutputBudgetBytes := fs.Int("tool-output-budget-bytes", 0, "maximum bytes from one tool observation sent to the model")
 	resumeRunning := fs.Bool("resume-running", false, "confirm recovery of a run still marked running")
 	runDir := fs.String("run-dir", "", "override run state directory")
 	sessionDir := fs.String("session-dir", "", "override session state directory")
@@ -95,6 +114,7 @@ func runResumeCommand(args []string) {
 
 	ctx, stop := commandContext()
 	defer stop()
+	progress := newCLIProgressWriter(os.Stderr)
 	result, err := resumeDiagnosisRun(ctx, resumeOptions{
 		RunID:                  *runID,
 		RunDir:                 *runDir,
@@ -106,6 +126,11 @@ func runResumeCommand(args []string) {
 		LLMTimeout:             *llmTimeout,
 		ToolTimeout:            *toolTimeout,
 		TaskTimeout:            *taskTimeout,
+		MaxToolCalls:           *maxToolCalls,
+		MaxParallelTools:       *maxParallelTools,
+		ContextBudgetBytes:     *contextBudgetBytes,
+		ToolOutputBudgetBytes:  *toolOutputBudgetBytes,
+		Progress:               progress.Report,
 		ResumeRunning:          *resumeRunning,
 	}, *mockScenario)
 	if err := saveDiagnosisResult(result, err); err != nil {
@@ -120,6 +145,11 @@ func runResumeCommand(args []string) {
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
+	}
+	if *out != "" || result.ReportDir != "" {
+		fmt.Fprintln(os.Stderr, "诊断完成，报告已保存。")
+	} else {
+		fmt.Fprintln(os.Stderr, "诊断完成。")
 	}
 	fmt.Print(markdown)
 }

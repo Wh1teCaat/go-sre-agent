@@ -19,18 +19,19 @@
 ## Runtime Loop
 
 1. Receive a user goal from CLI.
-2. Derive LLM-facing observations from the trace store.
+2. Derive budget-bounded LLM-facing observation copies from the trace store; complete evidence remains in trace.
 3. Send goal, available tool specs, and observations to the LLM provider for a decision.
 4. Continue directly for a tool/final action; call `Plan` only when the decision sets `NeedsPlan`, then request the action again in the same step.
 5. Validate the returned structured action, plan adherence, evidence roles, conclusion strength, final evidence, tool allowlist, and tool args.
 6. Before and after each LLM or tool request, atomically checkpoint the run, call ID, and call state.
-7. Execute the selected tool under a timeout and append its trace.
+7. Create a durable call ID for every selected tool. Independent read-only `tool_calls` batches run with bounded parallelism; trace/checkpoint writes remain serialized.
 8. Tool failures return as observations; the next decision may request planning or continue normal ReAct.
 9. Stop on `final`, cancellation, total-task timeout, or an error after `max_steps`.
 
 ## 安全边界
 
 - Runtime enforces max steps and per-tool timeout.
+- Runtime also enforces a total tool-call budget, bounded observation context, and a maximum of eight parallel read-only tools.
 - The CLI supplies a whole-task deadline and turns Ctrl-C/SIGTERM into a persisted cancellation state.
 - Every external call has a durable `call_id`; in-flight calls recovered after interruption become `unknown` rather than successful.
 - A run with an unknown side-effecting `smoke_run` call cannot be resumed automatically.
@@ -38,6 +39,7 @@
 - Runtime rejects final evidence whose step/tool pair does not exist in the current trace, and keeps check execution status separate from target health.
 - `identified` root causes require a supported fault type and its minimum structured evidence; `suspected` conclusions require both support and pending verification.
 - Tool execution errors are preserved as LLM-facing observations instead of terminating the runtime loop.
+- Runtime publishes structured progress events. The CLI renders those events to stderr, while reports and machine-readable output remain on stdout.
 - `log_read` only reads files under configured allowed directories.
 - `http_check` body snippets and `log_read` lines redact common password/token/api_key/secret values before they become observations.
 - `http_check` and `websocket_check` reject URLs whose host is not in configured `allowed_hosts`.

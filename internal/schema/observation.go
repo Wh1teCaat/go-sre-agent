@@ -42,6 +42,14 @@ type Fact struct {
 	Target     TargetIdentity `json:"target"`
 }
 
+// TraceReference 指向完整、持久化的工具观测。提示上下文被裁剪时，模型可用它
+// 知道摘要来自哪一次真实检查；它不是可伪造的新证据。
+type TraceReference struct {
+	Step   int    `json:"step"`
+	Tool   string `json:"tool"`
+	CallID string `json:"call_id,omitempty"`
+}
+
 // Observation 是工具执行后给 LLM 和报告层看的事实摘要。
 // CheckStatus 与 TargetHealth 分开：前者描述检查是否拿到可用结果，后者只描述
 // 被检查目标在本次、该范围内的状态。Error 不为空时也会进入后续上下文。
@@ -57,4 +65,7 @@ type Observation struct {
 	ObservedAt   time.Time      `json:"observed_at,omitempty"`
 	Facts        []Fact         `json:"facts,omitempty"`
 	Data         map[string]any `json:"data,omitempty"`
+	// ContextTruncated 仅用于 LLM 上下文副本，原始 trace observation 不会因它被改写。
+	ContextTruncated bool            `json:"context_truncated,omitempty"`
+	TraceReference   *TraceReference `json:"trace_reference,omitempty"`
 }

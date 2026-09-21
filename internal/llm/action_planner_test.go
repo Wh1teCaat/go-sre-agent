@@ -119,6 +119,22 @@ func TestActionPlannerParsesPlanningDecision(t *testing.T) {
 	}
 }
 
+func TestActionPlannerParsesIndependentToolCalls(t *testing.T) {
+	client := &captureChatClient{response: `{"type":"tool_calls","tool_calls":[{"thought_summary":"检查 Redis","tool":"redis_ping","args":{}},{"thought_summary":"检查 PostgreSQL","tool":"postgres_ping","args":{}}]}`}
+	planner := NewActionPlanner(client, ActionPlannerConfig{Model: "gpt-4o-mini", Skill: testSkillContent})
+
+	decision, err := planner.Next(context.Background(), Request{Goal: "检查依赖", Step: 1})
+	if err != nil {
+		t.Fatalf("next decision: %v", err)
+	}
+	if decision.Action == nil || decision.Action.Type != schema.ActionTypeToolCalls || len(decision.Action.ToolCalls) != 2 {
+		t.Fatalf("decision = %#v, want two tool calls", decision)
+	}
+	if decision.Action.ToolCalls[0].Tool != "redis_ping" || decision.Action.ToolCalls[1].Tool != "postgres_ping" {
+		t.Fatalf("tool calls = %#v", decision.Action.ToolCalls)
+	}
+}
+
 func TestActionPlannerParsesOptionalPlan(t *testing.T) {
 	client := &captureChatClient{response: `{"plan":{"reason":"需要检查后端","items":[{"id":"backend","goal":"检查后端"}]}}`}
 	planner := NewActionPlanner(client, ActionPlannerConfig{Model: "gpt-4o-mini", Skill: testSkillContent})

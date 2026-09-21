@@ -11,6 +11,8 @@
 - 默认使用 ReAct；复杂任务由 LLM 按需请求 plan，plan 不占用执行 step。
 - 保存完整 trace 和运行状态，支持查询、恢复和重新生成报告。
 - 在每次 LLM/工具调用前后原子 checkpoint，支持 Ctrl-C、任务总超时和受限恢复。
+- 对模型观测应用总量与单条输出预算，原始 trace 不受裁剪影响并保留回查引用。
+- 支持带独立 `call_id` 的有限并行只读检查，以及 stderr 实时进度输出。
 - 为同一个排障问题保存隔离的会话 Markdown 记忆，连续诊断只加载指定会话。
 - 通过工具白名单、目标白名单、参数校验、超时和脱敏限制执行边界。
 - 最终报告只能引用本次运行中真实存在的工具证据。
@@ -83,6 +85,10 @@ agent:
   llm_timeout: 30s
   tool_timeout: 5s
   task_timeout: 5m
+  max_tool_calls: 24
+  max_parallel_tools: 2
+  context_budget_bytes: 49152
+  tool_output_budget_bytes: 8192
   skill_path: skills/sre-diagnosis/SKILL.md
 
 policy:
@@ -146,6 +152,8 @@ go run ./cmd/sre-agent report --run-id <run_id>
 ```
 
 会话记忆的文件结构、隔离规则和人工编辑处理见 [docs/session-memory.md](docs/session-memory.md)。
+上下文预算、并行工具调用和 CLI 输出流规则见
+[docs/runtime-context-progress.md](docs/runtime-context-progress.md)。
 
 可用 mock 场景：
 
@@ -181,6 +189,8 @@ go run ./cmd/sre-agent report --run-id <run_id>
 - PostgreSQL DSN 和 Redis 地址由 runtime 注入，模型不能指定其他目标。
 - HTTP 默认仅允许 `GET`/`HEAD`；写请求受严格限制。
 - 工具和 LLM 请求均有独立超时。
+- `tool_calls` 只允许不同工具的独立只读检查；每项都有独立 checkpoint 和 `call_id`，并受调用总预算与并发上限约束。
+- 模型上下文中的大工具输出会被裁剪并标识 `context_truncated`；完整脱敏证据仍在 trace/run 中。
 - 常见 password、token、API key 和 secret 会在 trace 中脱敏。
 - 模型生成的 evidence 必须匹配本次真实 trace。
 - 根因结论必须以结构化 `root_cause` 声明（`identified`/`suspected`/`undetermined`）；判定为 `identified` 时必须绑定真实 trace 证据。

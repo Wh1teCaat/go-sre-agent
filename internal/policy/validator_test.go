@@ -26,6 +26,50 @@ func TestValidatorAllowsWhitelistedTool(t *testing.T) {
 	}
 }
 
+func TestValidatorAllowsIndependentToolCalls(t *testing.T) {
+	validator := NewValidator(Config{ToolAllowlist: []string{"redis_ping", "postgres_ping"}})
+	action := schema.Action{
+		Type: schema.ActionTypeToolCalls,
+		ToolCalls: []schema.ToolCall{
+			{Tool: "redis_ping", Args: json.RawMessage(`{}`)},
+			{Tool: "postgres_ping", Args: json.RawMessage(`{}`)},
+		},
+	}
+	if err := validator.ValidateAction(action); err != nil {
+		t.Fatalf("validate tool calls: %v", err)
+	}
+}
+
+func TestValidatorRejectsInvalidParallelToolCalls(t *testing.T) {
+	validator := NewValidator(Config{ToolAllowlist: []string{"redis_ping", "postgres_ping"}})
+	for name, action := range map[string]schema.Action{
+		"single call": {
+			Type:      schema.ActionTypeToolCalls,
+			ToolCalls: []schema.ToolCall{{Tool: "redis_ping", Args: json.RawMessage(`{}`)}},
+		},
+		"duplicate tool": {
+			Type: schema.ActionTypeToolCalls,
+			ToolCalls: []schema.ToolCall{
+				{Tool: "redis_ping", Args: json.RawMessage(`{}`)},
+				{Tool: "redis_ping", Args: json.RawMessage(`{"probe":"second"}`)},
+			},
+		},
+	} {
+		if err := validator.ValidateAction(action); err == nil {
+			t.Fatalf("%s succeeded, want validation error", name)
+		}
+	}
+
+	plan := &schema.Plan{Items: []schema.PlanItem{{ID: "dependencies", Goal: "检查依赖"}}}
+	err := validator.ValidateToolCallsAdherence([]schema.ToolCall{
+		{PlanItemID: "dependencies", Tool: "redis_ping", Args: json.RawMessage(`{}`)},
+		{PlanItemID: "dependencies", Tool: "postgres_ping", Args: json.RawMessage(`{}`)},
+	}, plan)
+	if err == nil || !strings.Contains(err.Error(), "cannot share plan item") {
+		t.Fatalf("plan adherence error = %v, want independent plan item requirement", err)
+	}
+}
+
 func TestValidatorRejectsDisallowedTool(t *testing.T) {
 	validator := NewValidator(Config{
 		ToolAllowlist: []string{"http_check"},

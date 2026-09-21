@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -890,6 +891,280 @@ func TestRuntimeMarksCancelledSideEffectToolUnknown(t *testing.T) {
 	}
 }
 
+func TestObservationsForPromptBoundsContextButRetainsFullTrace(t *testing.T) {
+	fullPayload := strings.Repeat("x", 4096)
+	entry := trace.Entry{
+		Step:     7,
+		CallID:   "call_tool_7",
+		ToolName: "log_read",
+		Result: schema.Observation{
+			Tool:    "log_read",
+			Summary: "读取到了很长的日志输出",
+			Data:    map[string]any{"payload": fullPayload},
+		},
+	}
+
+	observations := observationsForPrompt([]trace.Entry{entry}, 1024, 512)
+	if len(observations) != 1 {
+		t.Fatalf("prompt observations = %d, want 1", len(observations))
+	}
+	got := observations[0]
+	if !got.ContextTruncated || got.TraceReference == nil {
+		t.Fatalf("prompt observation = %#v, want truncation reference", got)
+	}
+	if got.TraceReference.Step != 7 || got.TraceReference.Tool != "log_read" || got.TraceReference.CallID != "call_tool_7" {
+		t.Fatalf("trace reference = %#v", got.TraceReference)
+	}
+	if _, exists := got.Data["payload"]; exists {
+		t.Fatalf("prompt data = %#v, want original payload omitted", got.Data)
+	}
+	if serializedSize(got) > 512 {
+		t.Fatalf("prompt observation size = %d, want <= 512", serializedSize(got))
+	}
+	if retained := entry.Result.Data["payload"]; retained != fullPayload {
+		t.Fatalf("trace payload = %#v, want full original output", retained)
+	}
+}
+
+func TestObservationsForPromptHonorsTotalBudgetForMalformedLegacyFields(t *testing.T) {
+	long := strings.Repeat("字段", 4096)
+	entry := trace.Entry{
+		Step:       1,
+		CallID:     long,
+		PlanItemID: long,
+		ToolName:   long,
+		Result: schema.Observation{
+			Tool:         long,
+			Summary:      long,
+			Error:        long,
+			CheckStatus:  long,
+			TargetHealth: long,
+			Data:         map[string]any{"payload": long},
+		},
+	}
+
+	observations := observationsForPrompt([]trace.Entry{entry}, 1024, 512)
+	if len(observations) != 1 {
+		t.Fatalf("prompt observations = %d, want 1", len(observations))
+	}
+	if size := serializedSize(observations[0]); size > 1024 {
+		t.Fatalf("prompt observation size = %d, want <= 1024", size)
+	}
+}
+
+func TestRuntimeRunsIndependentToolCallsWithBoundedParallelism(t *testing.T) {
+	registry := tools.NewRegistry()
+	state := &parallelRuntimeState{started: make(chan string, 2), release: make(chan struct{})}
+	for _, name := range []string{"redis_ping", "postgres_ping"} {
+		if err := registry.Register(concurrentRuntimeTool{name: name, state: state}); err != nil {
+			t.Fatalf("register %s: %v", name, err)
+		}
+	}
+	provider := llm.NewMockProvider([]schema.Action{
+		{
+			Type: schema.ActionTypeToolCalls,
+			ToolCalls: []schema.ToolCall{
+				{ThoughtSummary: "检查 Redis", Tool: "redis_ping", Args: json.RawMessage(`{}`)},
+				{ThoughtSummary: "检查 PostgreSQL", Tool: "postgres_ping", Args: json.RawMessage(`{}`)},
+			},
+		},
+		{
+			Type: schema.ActionTypeFinal,
+			Final: &schema.Diagnosis{
+				Summary:   "两个依赖检查均已完成。",
+				RootCause: &schema.RootCause{Status: "undetermined"},
+				Evidence:  []schema.Evidence{{Step: 1, Tool: "redis_ping"}, {Step: 1, Tool: "postgres_ping"}},
+			},
+		},
+	})
+	store := new(trace.MemoryStore)
+	var events []ProgressEvent
+	runtime := NewRuntime(RuntimeConfig{
+		MaxSteps:         2,
+		MaxToolCalls:     2,
+		MaxParallelTools: 2,
+		ToolTimeout:      time.Second,
+		Progress: func(event ProgressEvent) {
+			events = append(events, event)
+		},
+	}, provider, registry, policy.NewValidator(policy.Config{ToolAllowlist: []string{"redis_ping", "postgres_ping"}}), store)
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := runtime.Run(context.Background(), "并行检查依赖")
+		done <- err
+	}()
+	for range 2 {
+		select {
+		case <-state.started:
+		case <-time.After(time.Second):
+			t.Fatal("tools did not start in parallel")
+		}
+	}
+	state.mutex.Lock()
+	maxRunning := state.maxRunning
+	state.mutex.Unlock()
+	if maxRunning != 2 {
+		t.Fatalf("max running = %d, want configured parallelism 2", maxRunning)
+	}
+	close(state.release)
+	if err := <-done; err != nil {
+		t.Fatalf("run runtime: %v", err)
+	}
+
+	entries := store.List()
+	if len(entries) != 3 {
+		t.Fatalf("trace entries = %d, want two tools and final", len(entries))
+	}
+	if entries[0].Step != 1 || entries[1].Step != 1 || entries[0].CallID == "" || entries[0].CallID == entries[1].CallID {
+		t.Fatalf("tool trace call ids = %#v / %#v, want distinct calls in step 1", entries[0], entries[1])
+	}
+	started, completed, finalizing := 0, 0, 0
+	for _, event := range events {
+		switch event.Kind {
+		case ProgressCheckStarted:
+			started++
+		case ProgressCheckCompleted:
+			completed++
+		case ProgressFinalizing:
+			finalizing++
+		}
+	}
+	if started != 2 || completed != 2 || finalizing != 1 {
+		t.Fatalf("progress events = %#v, want 2 starts, 2 completions, 1 finalizing", events)
+	}
+}
+
+func TestRuntimeCancelsEveryToolInParallelBatch(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	registry := tools.NewRegistry()
+	state := &parallelRuntimeState{started: make(chan string, 2), release: make(chan struct{})}
+	for _, name := range []string{"redis_ping", "postgres_ping"} {
+		if err := registry.Register(concurrentRuntimeTool{name: name, state: state}); err != nil {
+			t.Fatalf("register %s: %v", name, err)
+		}
+	}
+	provider := llm.NewMockProvider([]schema.Action{{
+		Type: schema.ActionTypeToolCalls,
+		ToolCalls: []schema.ToolCall{
+			{Tool: "redis_ping", Args: json.RawMessage(`{}`)},
+			{Tool: "postgres_ping", Args: json.RawMessage(`{}`)},
+		},
+	}})
+	runtime := NewRuntime(RuntimeConfig{
+		MaxSteps:         2,
+		MaxToolCalls:     2,
+		MaxParallelTools: 2,
+		ToolTimeout:      time.Second,
+	}, provider, registry, policy.NewValidator(policy.Config{ToolAllowlist: []string{"redis_ping", "postgres_ping"}}), new(trace.MemoryStore))
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := runtime.Run(ctx, "取消并行检查")
+		done <- err
+	}()
+	for range 2 {
+		select {
+		case <-state.started:
+		case <-time.After(time.Second):
+			t.Fatal("tools did not start before cancellation")
+		}
+	}
+	cancel()
+	if err := <-done; !errors.Is(err, context.Canceled) {
+		t.Fatalf("run error = %v, want context cancelled", err)
+	}
+	for _, call := range runtime.Calls() {
+		if call.Kind == runstore.CallKindTool && call.Status != runstore.CallStatusCancelled {
+			t.Fatalf("tool call = %#v, want cancelled", call)
+		}
+	}
+}
+
+func TestRuntimeResumesWithBatchTraceAndDistinctCallIDs(t *testing.T) {
+	store := new(trace.MemoryStore)
+	store.Append(trace.Entry{
+		Step:     1,
+		CallID:   "call_redis",
+		ToolName: "redis_ping",
+		Result: schema.Observation{
+			Tool:    "redis_ping",
+			Summary: "PONG",
+		},
+	})
+	store.Append(trace.Entry{
+		Step:     1,
+		CallID:   "call_postgres",
+		ToolName: "postgres_ping",
+		Result: schema.Observation{
+			Tool:    "postgres_ping",
+			Summary: "PostgreSQL reachable",
+		},
+	})
+	provider := &captureProvider{actions: []schema.Action{{
+		Type: schema.ActionTypeFinal,
+		Final: &schema.Diagnosis{
+			Summary:   "恢复后复用两个已保存的检查结果。",
+			RootCause: &schema.RootCause{Status: "undetermined"},
+			Evidence:  []schema.Evidence{{Step: 1, Tool: "redis_ping"}, {Step: 1, Tool: "postgres_ping"}},
+		},
+	}}}
+	runtime := NewRuntime(RuntimeConfig{
+		MaxSteps:     2,
+		MaxToolCalls: 4,
+		ExistingCalls: []runstore.Call{
+			{CallID: "call_redis", Kind: runstore.CallKindTool, ToolName: "redis_ping", Status: runstore.CallStatusSucceeded},
+			{CallID: "call_postgres", Kind: runstore.CallKindTool, ToolName: "postgres_ping", Status: runstore.CallStatusSucceeded},
+		},
+	}, provider, tools.NewRegistry(), policy.NewValidator(policy.Config{}), store)
+
+	if _, err := runtime.Run(context.Background(), "恢复并汇总依赖检查"); err != nil {
+		t.Fatalf("run runtime: %v", err)
+	}
+	if len(provider.requests) != 1 || provider.requests[0].Step != 2 || len(provider.requests[0].Observations) != 2 {
+		t.Fatalf("resume request = %#v, want step 2 with two observations", provider.requests)
+	}
+	calls := runtime.Calls()
+	callIDs := map[string]struct{}{}
+	for _, call := range calls {
+		if call.CallID != "" {
+			callIDs[call.CallID] = struct{}{}
+		}
+	}
+	if len(callIDs) != len(calls) || len(callIDs) != 3 {
+		t.Fatalf("resumed calls = %#v, want retained distinct tool call ids plus LLM call", calls)
+	}
+}
+
+func TestRuntimeRejectsBatchBeyondToolCallBudget(t *testing.T) {
+	provider := &captureProvider{actions: []schema.Action{
+		{
+			Type: schema.ActionTypeToolCalls,
+			ToolCalls: []schema.ToolCall{
+				{Tool: "redis_ping", Args: json.RawMessage(`{}`)},
+				{Tool: "postgres_ping", Args: json.RawMessage(`{}`)},
+			},
+		},
+		{Type: schema.ActionTypeFinal, Final: &schema.Diagnosis{Summary: "工具预算不足，未执行检查。"}},
+	}}
+	runtime := NewRuntime(RuntimeConfig{MaxSteps: 1, MaxToolCalls: 1, MaxParallelTools: 2}, provider, tools.NewRegistry(), policy.NewValidator(policy.Config{
+		ToolAllowlist: []string{"redis_ping", "postgres_ping"},
+	}), new(trace.MemoryStore))
+
+	if _, err := runtime.Run(context.Background(), "验证工具预算"); err != nil {
+		t.Fatalf("run runtime: %v", err)
+	}
+	if len(provider.requests) != 2 || !strings.Contains(provider.requests[1].Correction, "tool call budget exceeded") {
+		t.Fatalf("requests/correction = %d/%q", len(provider.requests), provider.requests[1].Correction)
+	}
+	for _, call := range runtime.Calls() {
+		if call.Kind == runstore.CallKindTool {
+			t.Fatalf("tool calls = %#v, want no external tool execution", runtime.Calls())
+		}
+	}
+}
+
 type captureProvider struct {
 	plans        []*schema.Plan
 	actions      []schema.Action
@@ -950,6 +1225,51 @@ func (temporaryRuntimeError) Temporary() bool { return true }
 
 type cancellingRuntimeTool struct {
 	cancel context.CancelFunc
+}
+
+// parallelRuntimeState 在测试中同步记录并行工具的执行数量和阻塞点。
+type parallelRuntimeState struct {
+	mutex      sync.Mutex
+	running    int
+	maxRunning int
+	started    chan string
+	release    chan struct{}
+}
+
+// concurrentRuntimeTool 是可被测试控制的只读工具，用于验证并发和取消边界。
+type concurrentRuntimeTool struct {
+	name  string
+	state *parallelRuntimeState
+}
+
+func (t concurrentRuntimeTool) Spec() tools.ToolSpec {
+	return tools.ToolSpec{Name: t.name, Description: "并行测试工具", Schema: tools.ToolSchema{Properties: map[string]tools.ArgSpec{}}}
+}
+
+func (t concurrentRuntimeTool) Run(ctx context.Context, _ json.RawMessage) (schema.Observation, error) {
+	t.state.mutex.Lock()
+	t.state.running++
+	if t.state.running > t.state.maxRunning {
+		t.state.maxRunning = t.state.running
+	}
+	t.state.mutex.Unlock()
+	defer func() {
+		t.state.mutex.Lock()
+		t.state.running--
+		t.state.mutex.Unlock()
+	}()
+
+	select {
+	case t.state.started <- t.name:
+	case <-ctx.Done():
+		return schema.Observation{Tool: t.name}, ctx.Err()
+	}
+	select {
+	case <-t.state.release:
+		return schema.Observation{Tool: t.name, Summary: t.name + " completed"}, nil
+	case <-ctx.Done():
+		return schema.Observation{Tool: t.name}, ctx.Err()
+	}
 }
 
 func (t cancellingRuntimeTool) Spec() tools.ToolSpec {

@@ -15,6 +15,10 @@ agent:
   llm_timeout: 25s
   tool_timeout: 7s
   task_timeout: 3m
+  max_tool_calls: 16
+  max_parallel_tools: 3
+  context_budget_bytes: 16384
+  tool_output_budget_bytes: 2048
   skill_path: custom/SKILL.md
 policy:
   tool_allowlist:
@@ -58,6 +62,12 @@ targets:
 	if cfg.Agent.TaskTimeout != 3*time.Minute {
 		t.Fatalf("task timeout = %s, want 3m", cfg.Agent.TaskTimeout)
 	}
+	if cfg.Agent.MaxToolCalls != 16 || cfg.Agent.MaxParallelTools != 3 {
+		t.Fatalf("tool call limits = %d/%d, want 16/3", cfg.Agent.MaxToolCalls, cfg.Agent.MaxParallelTools)
+	}
+	if cfg.Agent.ContextBudgetBytes != 16384 || cfg.Agent.ToolOutputBudgetBytes != 2048 {
+		t.Fatalf("context limits = %d/%d, want 16384/2048", cfg.Agent.ContextBudgetBytes, cfg.Agent.ToolOutputBudgetBytes)
+	}
 	if cfg.Agent.SkillPath != "custom/SKILL.md" {
 		t.Fatalf("skill path = %q, want custom/SKILL.md", cfg.Agent.SkillPath)
 	}
@@ -94,6 +104,9 @@ func TestDefaultAllowsLocalDiagnosticHosts(t *testing.T) {
 	}
 	if cfg.Agent.TaskTimeout != 5*time.Minute {
 		t.Fatalf("default task timeout = %s, want 5m", cfg.Agent.TaskTimeout)
+	}
+	if cfg.Agent.MaxToolCalls != 24 || cfg.Agent.MaxParallelTools != 2 || cfg.Agent.ContextBudgetBytes != 48*1024 || cfg.Agent.ToolOutputBudgetBytes != 8*1024 {
+		t.Fatalf("default runtime limits = %#v", cfg.Agent)
 	}
 	if cfg.Paths.SessionDir != ".sessions" || cfg.Targets.Environment != "local" {
 		t.Fatalf("default session settings = %#v / %q", cfg.Paths, cfg.Targets.Environment)
@@ -133,6 +146,22 @@ func TestLoadRejectsNonPositiveDuration(t *testing.T) {
 		}
 		if _, err := Load(path); err == nil {
 			t.Fatalf("expected non-positive duration in %q to fail", config)
+		}
+	}
+}
+
+func TestLoadRejectsInvalidRuntimeBudgets(t *testing.T) {
+	for _, config := range []string{
+		"agent:\n  max_parallel_tools: 9\n",
+		"agent:\n  context_budget_bytes: 1023\n",
+		"agent:\n  tool_output_budget_bytes: 511\n",
+	} {
+		path := filepath.Join(t.TempDir(), "config.yaml")
+		if err := os.WriteFile(path, []byte(config), 0o644); err != nil {
+			t.Fatalf("write config: %v", err)
+		}
+		if _, err := Load(path); err == nil {
+			t.Fatalf("expected runtime budget validation for %q", config)
 		}
 	}
 }

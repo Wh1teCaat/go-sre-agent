@@ -187,6 +187,10 @@ func resolveDiagnosisConfig(opts diagnoseOptions) (diagnoseOptions, error) {
 		LLMTimeout:             cfg.Agent.LLMTimeout,
 		ToolTimeout:            cfg.Agent.ToolTimeout,
 		TaskTimeout:            cfg.Agent.TaskTimeout,
+		MaxToolCalls:           cfg.Agent.MaxToolCalls,
+		MaxParallelTools:       cfg.Agent.MaxParallelTools,
+		ContextBudgetBytes:     cfg.Agent.ContextBudgetBytes,
+		ToolOutputBudgetBytes:  cfg.Agent.ToolOutputBudgetBytes,
 		SkillPath:              cfg.Agent.SkillPath,
 		ToolAllowlist:          cfg.Policy.ToolAllowlist,
 		RunDir:                 cfg.Paths.RunDir,
@@ -196,6 +200,7 @@ func resolveDiagnosisConfig(opts diagnoseOptions) (diagnoseOptions, error) {
 		NewSession:             opts.NewSession,
 		OverwriteSessionMemory: opts.OverwriteSessionMemory,
 		ReportDir:              cfg.Paths.ReportDir,
+		Progress:               opts.Progress,
 	}
 	if opts.MaxSteps > 0 {
 		resolved.MaxSteps = opts.MaxSteps
@@ -209,6 +214,18 @@ func resolveDiagnosisConfig(opts diagnoseOptions) (diagnoseOptions, error) {
 	if opts.TaskTimeout > 0 {
 		resolved.TaskTimeout = opts.TaskTimeout
 	}
+	if opts.MaxToolCalls > 0 {
+		resolved.MaxToolCalls = opts.MaxToolCalls
+	}
+	if opts.MaxParallelTools > 0 {
+		resolved.MaxParallelTools = opts.MaxParallelTools
+	}
+	if opts.ContextBudgetBytes > 0 {
+		resolved.ContextBudgetBytes = opts.ContextBudgetBytes
+	}
+	if opts.ToolOutputBudgetBytes > 0 {
+		resolved.ToolOutputBudgetBytes = opts.ToolOutputBudgetBytes
+	}
 	if opts.RunDir != "" {
 		resolved.RunDir = opts.RunDir
 	}
@@ -218,7 +235,27 @@ func resolveDiagnosisConfig(opts diagnoseOptions) (diagnoseOptions, error) {
 	if opts.Environment != "" {
 		resolved.Environment = opts.Environment
 	}
+	if err := validateRuntimeLimits(resolved); err != nil {
+		return diagnoseOptions{}, err
+	}
 	return resolved, nil
+}
+
+// validateRuntimeLimits 对配置文件和 CLI 覆盖后的最终运行预算统一做边界校验。
+func validateRuntimeLimits(config diagnoseOptions) error {
+	if config.MaxToolCalls <= 0 {
+		return fmt.Errorf("max tool calls must be positive")
+	}
+	if config.MaxParallelTools <= 0 || config.MaxParallelTools > 8 {
+		return fmt.Errorf("max parallel tools must be between 1 and 8")
+	}
+	if config.ContextBudgetBytes < 1024 {
+		return fmt.Errorf("context budget bytes must be at least 1024")
+	}
+	if config.ToolOutputBudgetBytes < 512 {
+		return fmt.Errorf("tool output budget bytes must be at least 512")
+	}
+	return nil
 }
 
 // resolveRunDir 解析 CLI 或配置文件指定的 run 状态目录。

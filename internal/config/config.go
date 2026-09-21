@@ -16,11 +16,15 @@ type Config struct {
 }
 
 type AgentConfig struct {
-	MaxSteps    int
-	LLMTimeout  time.Duration
-	ToolTimeout time.Duration
-	TaskTimeout time.Duration
-	SkillPath   string
+	MaxSteps              int
+	LLMTimeout            time.Duration
+	ToolTimeout           time.Duration
+	TaskTimeout           time.Duration
+	MaxToolCalls          int
+	MaxParallelTools      int
+	ContextBudgetBytes    int
+	ToolOutputBudgetBytes int
+	SkillPath             string
 }
 
 type PolicyConfig struct {
@@ -61,11 +65,15 @@ type TargetConfig struct {
 
 type rawConfig struct {
 	Agent struct {
-		MaxSteps    int    `yaml:"max_steps"`
-		LLMTimeout  string `yaml:"llm_timeout"`
-		ToolTimeout string `yaml:"tool_timeout"`
-		TaskTimeout string `yaml:"task_timeout"`
-		SkillPath   string `yaml:"skill_path"`
+		MaxSteps              int    `yaml:"max_steps"`
+		LLMTimeout            string `yaml:"llm_timeout"`
+		ToolTimeout           string `yaml:"tool_timeout"`
+		TaskTimeout           string `yaml:"task_timeout"`
+		MaxToolCalls          int    `yaml:"max_tool_calls"`
+		MaxParallelTools      int    `yaml:"max_parallel_tools"`
+		ContextBudgetBytes    int    `yaml:"context_budget_bytes"`
+		ToolOutputBudgetBytes int    `yaml:"tool_output_budget_bytes"`
+		SkillPath             string `yaml:"skill_path"`
 	} `yaml:"agent"`
 	Policy struct {
 		ToolAllowlist     []string `yaml:"tool_allowlist"`
@@ -100,11 +108,15 @@ type rawConfig struct {
 func Default() Config {
 	return Config{
 		Agent: AgentConfig{
-			MaxSteps:    12,
-			LLMTimeout:  30 * time.Second,
-			ToolTimeout: 5 * time.Second,
-			TaskTimeout: 5 * time.Minute,
-			SkillPath:   "skills/sre-diagnosis/SKILL.md",
+			MaxSteps:              12,
+			LLMTimeout:            30 * time.Second,
+			ToolTimeout:           5 * time.Second,
+			TaskTimeout:           5 * time.Minute,
+			MaxToolCalls:          24,
+			MaxParallelTools:      2,
+			ContextBudgetBytes:    48 * 1024,
+			ToolOutputBudgetBytes: 8 * 1024,
+			SkillPath:             "skills/sre-diagnosis/SKILL.md",
 		},
 		Policy: PolicyConfig{
 			ToolAllowlist: []string{
@@ -174,6 +186,27 @@ func Load(path string) (Config, error) {
 	// 未写字段继续沿用 Default，避免示例配置必须复制完整结构。
 	if raw.Agent.MaxSteps > 0 {
 		cfg.Agent.MaxSteps = raw.Agent.MaxSteps
+	}
+	if raw.Agent.MaxToolCalls > 0 {
+		cfg.Agent.MaxToolCalls = raw.Agent.MaxToolCalls
+	}
+	if raw.Agent.MaxParallelTools > 0 {
+		if raw.Agent.MaxParallelTools > 8 {
+			return Config{}, fmt.Errorf("agent.max_parallel_tools must not exceed 8")
+		}
+		cfg.Agent.MaxParallelTools = raw.Agent.MaxParallelTools
+	}
+	if raw.Agent.ContextBudgetBytes > 0 {
+		if raw.Agent.ContextBudgetBytes < 1024 {
+			return Config{}, fmt.Errorf("agent.context_budget_bytes must be at least 1024")
+		}
+		cfg.Agent.ContextBudgetBytes = raw.Agent.ContextBudgetBytes
+	}
+	if raw.Agent.ToolOutputBudgetBytes > 0 {
+		if raw.Agent.ToolOutputBudgetBytes < 512 {
+			return Config{}, fmt.Errorf("agent.tool_output_budget_bytes must be at least 512")
+		}
+		cfg.Agent.ToolOutputBudgetBytes = raw.Agent.ToolOutputBudgetBytes
 	}
 	if raw.Agent.LLMTimeout != "" {
 		duration, err := time.ParseDuration(raw.Agent.LLMTimeout)

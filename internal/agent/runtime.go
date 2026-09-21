@@ -22,13 +22,19 @@ import (
 )
 
 type RuntimeConfig struct {
-	MaxSteps         int
-	LLMTimeout       time.Duration
-	ToolTimeout      time.Duration
-	Model            string
-	TargetContext    map[string]any
-	ToolArgOverrides map[string]map[string]any
-	Memories         []schema.Memory
+	MaxSteps              int
+	LLMTimeout            time.Duration
+	ToolTimeout           time.Duration
+	MaxToolCalls          int
+	MaxParallelTools      int
+	ContextBudgetBytes    int
+	ToolOutputBudgetBytes int
+	Model                 string
+	TargetContext         map[string]any
+	ToolArgOverrides      map[string]map[string]any
+	Memories              []schema.Memory
+	// Progress 接收非阻塞的运行时进度事件；它不参与持久化或决策。
+	Progress func(ProgressEvent)
 	// ExistingCalls 在恢复尝试前还原持久化调用记录。
 	ExistingCalls []runstore.Call
 	// Checkpoint 在每次外部调用前后持久化 runtime 快照；返回错误会阻止下一次外部
@@ -54,6 +60,7 @@ type Runtime struct {
 }
 
 func NewRuntime(config RuntimeConfig, provider llm.Provider, registry *tools.Registry, validator *policy.Validator, traceStore *trace.MemoryStore) *Runtime {
+	config = normalizeRuntimeConfig(config)
 	return &Runtime{
 		config:    config,
 		provider:  provider,
@@ -62,6 +69,28 @@ func NewRuntime(config RuntimeConfig, provider llm.Provider, registry *tools.Reg
 		trace:     traceStore,
 		calls:     append([]runstore.Call(nil), config.ExistingCalls...),
 	}
+}
+
+const (
+	defaultContextBudgetBytes    = 48 * 1024
+	defaultToolOutputBudgetBytes = 8 * 1024
+)
+
+// normalizeRuntimeConfig 为未通过 CLI 初始化的测试和嵌入式调用提供保守默认值。
+func normalizeRuntimeConfig(config RuntimeConfig) RuntimeConfig {
+	if config.MaxToolCalls <= 0 {
+		config.MaxToolCalls = config.MaxSteps
+	}
+	if config.MaxParallelTools <= 0 {
+		config.MaxParallelTools = 1
+	}
+	if config.ContextBudgetBytes <= 0 {
+		config.ContextBudgetBytes = defaultContextBudgetBytes
+	}
+	if config.ToolOutputBudgetBytes <= 0 {
+		config.ToolOutputBudgetBytes = defaultToolOutputBudgetBytes
+	}
+	return config
 }
 
 // Run 执行一次完整诊断循环：让 LLM 选择是否更新计划以及下一步 action，
@@ -77,7 +106,7 @@ func (r *Runtime) Run(ctx context.Context, goal string) (*schema.Diagnosis, erro
 			return nil, err
 		}
 		entries := r.trace.List()
-		observations := observationsFromTrace(entries)
+		observations := observationsForPrompt(entries, r.config.ContextBudgetBytes, r.config.ToolOutputBudgetBytes)
 		var actionMeta llmMeta
 
 		request := llm.Request{
@@ -116,6 +145,7 @@ func (r *Runtime) Run(ctx context.Context, goal string) (*schema.Diagnosis, erro
 		action := *decision.Action
 		switch action.Type {
 		case schema.ActionTypeFinal:
+			r.emitProgress(ProgressEvent{Kind: ProgressFinalizing, Step: step, TotalSteps: r.config.MaxSteps})
 			r.applyCoverage(action.Final.Coverage)
 			r.trace.Append(actionTraceEntry(step, action, actionMeta, r.config.Model))
 			if err := r.checkpoint(); err != nil {
@@ -127,10 +157,35 @@ func (r *Runtime) Run(ctx context.Context, goal string) (*schema.Diagnosis, erro
 			if err := r.executeTool(ctx, step, action, actionMeta); err != nil {
 				return nil, err
 			}
+		case schema.ActionTypeToolCalls:
+			if err := r.executeToolCalls(ctx, step, action.ToolCalls, actionMeta); err != nil {
+				return nil, err
+			}
 		}
 	}
 
 	return nil, fmt.Errorf("max steps reached: %d", r.config.MaxSteps)
+}
+
+// emitProgress 将进度发布在 runtime 边界，避免 CLI 输出影响诊断状态或模型上下文。
+func (r *Runtime) emitProgress(event ProgressEvent) {
+	if r.config.Progress != nil {
+		r.config.Progress(event)
+	}
+}
+
+// validateToolCallBudget 确保批量 action 也不会绕过单次运行的工具调用总预算。
+func (r *Runtime) validateToolCallBudget(calls []schema.ToolCall) error {
+	used := 0
+	for _, call := range r.calls {
+		if call.Kind == runstore.CallKindTool {
+			used++
+		}
+	}
+	if used+len(calls) > r.config.MaxToolCalls {
+		return fmt.Errorf("tool call budget exceeded: used %d, requested %d, limit %d", used, len(calls), r.config.MaxToolCalls)
+	}
+	return nil
 }
 
 // Calls 返回 runtime 持久化外部调用记录的副本。
@@ -307,20 +362,27 @@ func (r *Runtime) requestValidDecision(ctx context.Context, request llm.Request,
 			lastErr = fmt.Errorf("validate decision at step %d: %w", request.Step, err)
 		} else {
 			action := *decision.Action
-			if action.Type == schema.ActionTypeToolCall {
+			switch action.Type {
+			case schema.ActionTypeToolCall:
 				action, err = applyToolArgOverrides(action, r.config.ToolArgOverrides)
-				decision.Action = &action
-				lastDecision = decision
-				if err != nil {
-					lastErr = fmt.Errorf("prepare tool args at step %d: %w", request.Step, err)
-				}
+			case schema.ActionTypeToolCalls:
+				action.ToolCalls, err = applyToolCallsArgOverrides(action.ToolCalls, r.config.ToolArgOverrides)
+			}
+			decision.Action = &action
+			lastDecision = decision
+			if err != nil {
+				lastErr = fmt.Errorf("prepare tool args at step %d: %w", request.Step, err)
 			}
 			if err == nil {
 				if err = r.validator.ValidateAction(action); err != nil {
 					lastErr = fmt.Errorf("validate action at step %d: %w", request.Step, err)
-				} else if err = r.validator.ValidatePlanAdherence(action, r.plan); err != nil {
+				} else if err = r.validateActionPlanAdherence(action); err != nil {
 					lastErr = fmt.Errorf("validate plan adherence at step %d: %w", request.Step, err)
-				} else if err = validateNoDuplicateToolCall(action, entries); err != nil {
+				} else if err = r.validateParallelToolCallsSafety(action); err != nil {
+					lastErr = fmt.Errorf("validate parallel tool calls at step %d: %w", request.Step, err)
+				} else if err = validateNoDuplicateToolCalls(toolCallsForAction(action), entries); err != nil {
+					lastErr = fmt.Errorf("validate tool call at step %d: %w", request.Step, err)
+				} else if err = r.validateToolCallBudget(toolCallsForAction(action)); err != nil {
 					lastErr = fmt.Errorf("validate tool call at step %d: %w", request.Step, err)
 				} else if action.Type == schema.ActionTypeFinal {
 					if err = r.validator.ValidateFinalCoverage(action.Final, r.Plan()); err != nil {
@@ -358,6 +420,30 @@ func (r *Runtime) requestValidDecision(ctx context.Context, request llm.Request,
 		}
 	}
 	return lastDecision, meta, lastErr
+}
+
+// validateActionPlanAdherence 根据单个或批量 action 选择相应的计划归属校验。
+func (r *Runtime) validateActionPlanAdherence(action schema.Action) error {
+	switch action.Type {
+	case schema.ActionTypeToolCalls:
+		return r.validator.ValidateToolCallsAdherence(action.ToolCalls, r.plan)
+	default:
+		return r.validator.ValidatePlanAdherence(action, r.plan)
+	}
+}
+
+// validateParallelToolCallsSafety 禁止把可能改变目标状态的工具放进并行批次。
+// 这类调用即使独立，也必须保持阶段二定义的单调用恢复边界。
+func (r *Runtime) validateParallelToolCallsSafety(action schema.Action) error {
+	if action.Type != schema.ActionTypeToolCalls {
+		return nil
+	}
+	for _, call := range action.ToolCalls {
+		if tool, ok := r.registry.Get(call.Tool); ok && tool.Spec().SideEffect {
+			return fmt.Errorf("side-effecting tool %q cannot be in parallel tool_calls", call.Tool)
+		}
+	}
+	return nil
 }
 
 func correctionMessage(err error) string {
@@ -477,23 +563,6 @@ func nextStep(entries []trace.Entry) int {
 	return entries[len(entries)-1].Step + 1
 }
 
-// observationsFromTrace 从内部审计 trace 中提取 LLM 可见的 observation。
-// trace 的耗时、参数和审计字段不会回传给模型，避免模型把执行轨迹当成事实证据。
-func observationsFromTrace(entries []trace.Entry) []schema.Observation {
-	observations := make([]schema.Observation, 0, len(entries))
-	for _, entry := range entries {
-		if entry.Result.Tool == "" && entry.Result.Summary == "" && entry.Result.Error == "" && len(entry.Result.Data) == 0 {
-			continue
-		}
-		observation := entry.Result
-		// step 来自 trace，而不是工具返回值；模型据此引用真实 evidence。
-		observation.Step = entry.Step
-		observation.PlanItemID = entry.PlanItemID
-		observations = append(observations, observation)
-	}
-	return observations
-}
-
 func applyToolArgOverrides(action schema.Action, overrides map[string]map[string]any) (schema.Action, error) {
 	toolOverrides := overrides[action.Tool]
 	if len(toolOverrides) == 0 {
@@ -520,129 +589,260 @@ func applyToolArgOverrides(action schema.Action, overrides map[string]map[string
 	return action, nil
 }
 
-func validateNoDuplicateToolCall(action schema.Action, entries []trace.Entry) error {
-	if action.Type != schema.ActionTypeToolCall {
+// applyToolCallsArgOverrides 对批量工具调用逐项应用受配置保护的目标参数。
+func applyToolCallsArgOverrides(calls []schema.ToolCall, overrides map[string]map[string]any) ([]schema.ToolCall, error) {
+	prepared := append([]schema.ToolCall(nil), calls...)
+	for index := range prepared {
+		action, err := applyToolArgOverrides(schema.Action{
+			Type: schema.ActionTypeToolCall,
+			Tool: prepared[index].Tool,
+			Args: prepared[index].Args,
+		}, overrides)
+		if err != nil {
+			return nil, err
+		}
+		prepared[index].Args = action.Args
+	}
+	return prepared, nil
+}
+
+// toolCallsForAction 将单个或批量 action 统一为工具调用列表，便于预算与重复检查。
+func toolCallsForAction(action schema.Action) []schema.ToolCall {
+	switch action.Type {
+	case schema.ActionTypeToolCall:
+		return []schema.ToolCall{{
+			ThoughtSummary: action.ThoughtSummary,
+			PlanItemID:     action.PlanItemID,
+			Tool:           action.Tool,
+			Args:           action.Args,
+		}}
+	case schema.ActionTypeToolCalls:
+		return append([]schema.ToolCall(nil), action.ToolCalls...)
+	default:
 		return nil
 	}
-	args := map[string]any{}
-	if err := json.Unmarshal(action.Args, &args); err != nil {
-		return err
-	}
-	candidate := redactTraceArgs(args)
-	for _, entry := range entries {
-		if entry.ToolName == action.Tool && entry.Error == "" && reflect.DeepEqual(entry.Args, candidate) {
-			// 当前单次 runtime 会阻止完全相同的成功重复调用；若将来需要有意重复测量，
-			// 应增加明确的重复意图或指纹。
-			return fmt.Errorf("duplicate successful tool call matches step %d", entry.Step)
+}
+
+// validateNoDuplicateToolCalls 防止新调用与既有成功调用重复，也防止同一批次
+// 通过不同顺序重复相同参数。并行批量不允许依赖执行顺序。
+func validateNoDuplicateToolCalls(calls []schema.ToolCall, entries []trace.Entry) error {
+	seen := map[string]struct{}{}
+	for _, call := range calls {
+		args := map[string]any{}
+		if err := json.Unmarshal(call.Args, &args); err != nil {
+			return err
+		}
+		candidate := redactTraceArgs(args)
+		keyData, err := json.Marshal(struct {
+			Tool string         `json:"tool"`
+			Args map[string]any `json:"args"`
+		}{Tool: call.Tool, Args: candidate})
+		if err != nil {
+			return err
+		}
+		key := string(keyData)
+		if _, exists := seen[key]; exists {
+			return fmt.Errorf("duplicate tool call %q in one action", call.Tool)
+		}
+		seen[key] = struct{}{}
+		for _, entry := range entries {
+			if entry.ToolName == call.Tool && entry.Error == "" && reflect.DeepEqual(entry.Args, candidate) {
+				return fmt.Errorf("duplicate successful tool call matches step %d", entry.Step)
+			}
 		}
 	}
 	return nil
 }
 
-// executeTool 在调用工具前 checkpoint 执行中的调用，再将其结果与 trace 一同保存。
-// 已知工具失败仍作为 observation；只有 checkpoint 失败会停止诊断循环。
+// preparedToolCall 是已完成调用前 checkpoint、但尚未开始执行的工具调用。
+type preparedToolCall struct {
+	call       schema.ToolCall
+	args       map[string]any
+	traceArgs  map[string]any
+	tool       tools.Tool
+	sideEffect bool
+	callIndex  int
+}
+
+// toolExecutionResult 是并行 worker 的无副作用回传值；持久化统一在主循环完成。
+type toolExecutionResult struct {
+	prepared    preparedToolCall
+	observation schema.Observation
+	err         error
+	startedAt   time.Time
+	duration    time.Duration
+}
+
+// executeTool 保持单工具 action 的兼容入口，实际复用批量执行和持久化逻辑。
 func (r *Runtime) executeTool(ctx context.Context, step int, action schema.Action, meta llmMeta) error {
-	args := map[string]any{}
-	_ = json.Unmarshal(action.Args, &args)
-	traceArgs := redactTraceArgs(args)
+	return r.executeToolCalls(ctx, step, toolCallsForAction(action), meta)
+}
 
-	startedAt := time.Now()
-	var observation schema.Observation
-	var err error
-	var sideEffect bool
-	toolInvoked := false
-	if tool, ok := r.registry.Get(action.Tool); ok {
-		sideEffect = tool.Spec().SideEffect
-	}
-	callIndex, checkpointErr := r.startCall(runstore.Call{
-		Kind:       runstore.CallKindTool,
-		Step:       step,
-		ToolName:   action.Tool,
-		Args:       traceArgs,
-		SideEffect: sideEffect,
-	})
-	if checkpointErr != nil {
-		return checkpointErr
+// executeToolCalls 为每项调用先持久化 running checkpoint，再按并发上限执行。worker
+// 不修改 trace 或 calls，结果在主循环按 action 顺序写回，保证恢复快照的一致性。
+func (r *Runtime) executeToolCalls(ctx context.Context, step int, calls []schema.ToolCall, meta llmMeta) error {
+	prepared := make([]preparedToolCall, 0, len(calls))
+	for _, call := range calls {
+		args := map[string]any{}
+		if err := json.Unmarshal(call.Args, &args); err != nil {
+			return fmt.Errorf("decode tool args for %q: %w", call.Tool, err)
+		}
+		if args == nil {
+			args = map[string]any{}
+		}
+		tool, exists := r.registry.Get(call.Tool)
+		sideEffect := exists && tool.Spec().SideEffect
+		callIndex, err := r.startCall(runstore.Call{
+			Kind:       runstore.CallKindTool,
+			Step:       step,
+			ToolName:   call.Tool,
+			Args:       redactTraceArgs(args),
+			SideEffect: sideEffect,
+		})
+		if err != nil {
+			return err
+		}
+		prepared = append(prepared, preparedToolCall{
+			call:       call,
+			args:       args,
+			traceArgs:  redactTraceArgs(args),
+			tool:       tool,
+			sideEffect: sideEffect,
+			callIndex:  callIndex,
+		})
 	}
 
-	if tool, ok := r.registry.Get(action.Tool); ok {
-		toolInvoked = true
-		timeout := r.config.ToolTimeout
-		if specTimeout := tool.Spec().Timeout; specTimeout > 0 {
-			timeout = specTimeout
-		}
-		toolCtx := ctx
-		if timeout > 0 {
-			var cancel context.CancelFunc
-			toolCtx, cancel = context.WithTimeout(ctx, timeout)
-			defer cancel()
-		}
-		observation, err = tool.Run(toolCtx, action.Args)
-	} else {
-		err = fmt.Errorf("tool %q is not registered", action.Tool)
+	results := make([]toolExecutionResult, len(prepared))
+	parallelism := min(r.config.MaxParallelTools, len(prepared))
+	semaphore := make(chan struct{}, parallelism)
+	completed := make(chan int, len(prepared))
+	for index := range prepared {
+		current := prepared[index]
+		callID := r.calls[current.callIndex].CallID
+		r.emitProgress(ProgressEvent{
+			Kind:       ProgressCheckStarted,
+			Step:       step,
+			TotalSteps: r.config.MaxSteps,
+			PlanItemID: strings.TrimSpace(current.call.PlanItemID),
+			Tool:       current.call.Tool,
+			CallID:     callID,
+			Message:    current.call.ThoughtSummary,
+		})
+		go func(index int, current preparedToolCall) {
+			semaphore <- struct{}{}
+			results[index] = runPreparedTool(ctx, r.config.ToolTimeout, current)
+			<-semaphore
+			completed <- index
+		}(index, current)
 	}
+	for range prepared {
+		<-completed
+	}
+
+	for _, result := range results {
+		if err := r.recordToolExecution(ctx, step, result, meta); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// runPreparedTool 在 worker 中执行已 checkpoint 的工具。它不写共享状态，使并发
+// 调度不会与 trace、calls 或持久化存储产生数据竞争。
+func runPreparedTool(ctx context.Context, defaultTimeout time.Duration, prepared preparedToolCall) toolExecutionResult {
+	result := toolExecutionResult{prepared: prepared, startedAt: time.Now()}
+	if prepared.tool == nil {
+		result.err = fmt.Errorf("tool %q is not registered", prepared.call.Tool)
+		result.duration = time.Since(result.startedAt)
+		return result
+	}
+	timeout := defaultTimeout
+	if specTimeout := prepared.tool.Spec().Timeout; specTimeout > 0 {
+		timeout = specTimeout
+	}
+	toolCtx := ctx
+	if timeout > 0 {
+		var cancel context.CancelFunc
+		toolCtx, cancel = context.WithTimeout(ctx, timeout)
+		defer cancel()
+	}
+	result.observation, result.err = prepared.tool.Run(toolCtx, prepared.call.Args)
+	result.duration = time.Since(result.startedAt)
+	return result
+}
+
+// recordToolExecution 将 worker 结果顺序写入 trace 和运行调用记录，并在完成
+// checkpoint 后发布完成事件。工具错误仍是可供后续诊断使用的 observation。
+func (r *Runtime) recordToolExecution(ctx context.Context, step int, execution toolExecutionResult, meta llmMeta) error {
+	prepared := execution.prepared
+	observation := execution.observation
 	hasToolResult := hasObservationResult(observation)
-	if err != nil {
-		// 即使工具返回 error，也尽量把工具已经构造出的 observation 保留下来。
-		// 例如 HTTP 连接失败、日志路径越界等失败本身也是后续诊断的证据。
+	if execution.err != nil {
 		if observation.Tool == "" {
-			observation.Tool = action.Tool
+			observation.Tool = prepared.call.Tool
 		}
 		if observation.Summary == "" {
-			observation.Summary = fmt.Sprintf("%s failed", action.Tool)
+			observation.Summary = fmt.Sprintf("%s failed", prepared.call.Tool)
 		}
-		observation.Error = tools.RedactSensitive(err.Error())
+		observation.Error = tools.RedactSensitive(execution.err.Error())
 	}
 	observation = redactObservation(observation)
-	observation = enrichObservation(observation, action.Tool, args, startedAt, ctx, err, toolInvoked, hasToolResult)
+	observation = enrichObservation(observation, prepared.call.Tool, prepared.args, execution.startedAt, ctx, execution.err, prepared.tool != nil, hasToolResult)
 	// 目标身份和 Facts 在补齐阶段才生成，因此在写入 trace 前再次经过同一脱敏边界。
 	observation = redactObservation(observation)
 
-	duration := time.Since(startedAt)
+	duration := execution.duration
 	if duration <= 0 {
 		duration = time.Nanosecond
 	}
-
 	entry := trace.Entry{
 		Step:           step,
-		CallID:         r.calls[callIndex].CallID,
-		ActionType:     action.Type,
-		ThoughtSummary: action.ThoughtSummary,
-		PlanItemID:     strings.TrimSpace(action.PlanItemID),
-		ToolName:       action.Tool,
+		CallID:         r.calls[prepared.callIndex].CallID,
+		ActionType:     schema.ActionTypeToolCall,
+		ThoughtSummary: prepared.call.ThoughtSummary,
+		PlanItemID:     strings.TrimSpace(prepared.call.PlanItemID),
+		ToolName:       prepared.call.Tool,
 		Model:          r.config.Model,
 		LLMDuration:    meta.Duration,
 		LLMAttempts:    meta.Attempts,
-		Args:           traceArgs,
+		Args:           prepared.traceArgs,
 		Result:         observation,
 		Duration:       duration,
-		StartedAt:      startedAt,
+		StartedAt:      execution.startedAt,
 	}
-	if err != nil {
-		entry.Error = tools.RedactSensitive(err.Error())
+	if execution.err != nil {
+		entry.Error = tools.RedactSensitive(execution.err.Error())
 	}
-	// trace 是报告证据和下一轮 observation 的共同来源，因此成功/失败都必须落盘到 store。
 	r.trace.Append(entry)
 
 	result := observation
 	status := runstore.CallStatusSucceeded
 	class := runstore.ErrorClass("")
 	callErr := error(nil)
-	if err != nil {
-		callErr = err
-		class = ClassifyError(ctx, err)
+	if execution.err != nil {
+		callErr = execution.err
+		class = ClassifyError(ctx, execution.err)
 		status = callStatusForError(class)
-		// 有副作用的调用即使返回错误，也可能在响应丢失前到达目标；必须保留该不确定性
-		// 供恢复逻辑处理。
-		if sideEffect {
+		if prepared.sideEffect {
 			status = runstore.CallStatusUnknown
 			class = runstore.ErrorClassUnknown
-			callErr = fmt.Errorf("execution outcome is unknown: %w", err)
+			callErr = fmt.Errorf("execution outcome is unknown: %w", execution.err)
 		}
 	}
-	if checkpointErr := r.finishCall(callIndex, status, class, callErr, &result); checkpointErr != nil {
-		return checkpointErr
+	if err := r.finishCall(prepared.callIndex, status, class, callErr, &result); err != nil {
+		return err
 	}
+	r.emitProgress(ProgressEvent{
+		Kind:       ProgressCheckCompleted,
+		Step:       step,
+		TotalSteps: r.config.MaxSteps,
+		PlanItemID: strings.TrimSpace(prepared.call.PlanItemID),
+		Tool:       prepared.call.Tool,
+		CallID:     entry.CallID,
+		Summary:    observation.Summary,
+		Error:      entry.Error,
+		Duration:   duration,
+	})
 	return nil
 }
 

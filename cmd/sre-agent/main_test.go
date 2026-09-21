@@ -966,6 +966,10 @@ agent:
   max_steps: 11
   llm_timeout: 20s
   tool_timeout: 9s
+  max_tool_calls: 18
+  max_parallel_tools: 3
+  context_budget_bytes: 16384
+  tool_output_budget_bytes: 2048
 policy:
   tool_allowlist:
     - http_check
@@ -1031,6 +1035,9 @@ targets:
 	if cfg.ToolTimeout != 9*time.Second {
 		t.Fatalf("tool timeout = %s, want 9s", cfg.ToolTimeout)
 	}
+	if cfg.MaxToolCalls != 18 || cfg.MaxParallelTools != 3 || cfg.ContextBudgetBytes != 16384 || cfg.ToolOutputBudgetBytes != 2048 {
+		t.Fatalf("runtime limits = %d/%d/%d/%d", cfg.MaxToolCalls, cfg.MaxParallelTools, cfg.ContextBudgetBytes, cfg.ToolOutputBudgetBytes)
+	}
 	if cfg.RunDir != "/configured/runs" {
 		t.Fatalf("run dir = %q, want config value", cfg.RunDir)
 	}
@@ -1073,6 +1080,10 @@ func TestResolveDiagnosisConfigAppliesCLIOverridesOnly(t *testing.T) {
 agent:
   max_steps: 11
   tool_timeout: 9s
+  max_tool_calls: 18
+  max_parallel_tools: 3
+  context_budget_bytes: 16384
+  tool_output_budget_bytes: 2048
 policy:
   tool_allowlist:
     - http_check
@@ -1092,15 +1103,19 @@ targets:
 `)
 
 	cfg, err := resolveDiagnosisConfig(diagnoseOptions{
-		Goal:           "diagnose",
-		ConfigPath:     configPath,
-		BackendBaseURL: "http://override:8080",
-		LogFile:        "/override/logs/app.log",
-		MaxSteps:       3,
-		LLMTimeout:     1500 * time.Millisecond,
-		ToolTimeout:    2 * time.Second,
-		RunDir:         "/override/runs",
-		ReportDir:      "/override/reports",
+		Goal:                  "diagnose",
+		ConfigPath:            configPath,
+		BackendBaseURL:        "http://override:8080",
+		LogFile:               "/override/logs/app.log",
+		MaxSteps:              3,
+		LLMTimeout:            1500 * time.Millisecond,
+		ToolTimeout:           2 * time.Second,
+		MaxToolCalls:          4,
+		MaxParallelTools:      1,
+		ContextBudgetBytes:    8192,
+		ToolOutputBudgetBytes: 1024,
+		RunDir:                "/override/runs",
+		ReportDir:             "/override/reports",
 	})
 	if err != nil {
 		t.Fatalf("resolve config: %v", err)
@@ -1109,11 +1124,24 @@ targets:
 	if cfg.BackendBaseURL != "http://configured:8080" || cfg.LogFile != "/configured/logs/app.log" {
 		t.Fatalf("non-CLI targets were overridden: %q/%q", cfg.BackendBaseURL, cfg.LogFile)
 	}
-	if cfg.MaxSteps != 3 || cfg.LLMTimeout != 1500*time.Millisecond || cfg.ToolTimeout != 2*time.Second {
-		t.Fatalf("agent config = %d/%s/%s, want override", cfg.MaxSteps, cfg.LLMTimeout, cfg.ToolTimeout)
+	if cfg.MaxSteps != 3 || cfg.LLMTimeout != 1500*time.Millisecond || cfg.ToolTimeout != 2*time.Second || cfg.MaxToolCalls != 4 || cfg.MaxParallelTools != 1 || cfg.ContextBudgetBytes != 8192 || cfg.ToolOutputBudgetBytes != 1024 {
+		t.Fatalf("agent config = %#v, want CLI overrides", cfg)
 	}
 	if cfg.RunDir != "/override/runs" || cfg.ReportDir != "/configured/reports" {
 		t.Fatalf("paths = %q/%q, want CLI run dir and configured report dir", cfg.RunDir, cfg.ReportDir)
+	}
+}
+
+func TestResolveDiagnosisConfigRejectsInvalidRuntimeLimitOverrides(t *testing.T) {
+	configPath := writeTestConfig(t, "targets:\n  backend_base_url: http://configured:8080\n")
+	for name, options := range map[string]diagnoseOptions{
+		"parallelism": {Goal: "diagnose", ConfigPath: configPath, MaxParallelTools: 9},
+		"context":     {Goal: "diagnose", ConfigPath: configPath, ContextBudgetBytes: 1023},
+		"tool output": {Goal: "diagnose", ConfigPath: configPath, ToolOutputBudgetBytes: 511},
+	} {
+		if _, err := resolveDiagnosisConfig(options); err == nil {
+			t.Fatalf("%s override succeeded, want runtime limit error", name)
+		}
 	}
 }
 

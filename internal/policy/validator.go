@@ -25,9 +25,40 @@ func (v *Validator) ValidateAction(action schema.Action) error {
 		return nil
 	case schema.ActionTypeToolCall:
 		return v.validateToolCall(action)
+	case schema.ActionTypeToolCalls:
+		return v.validateToolCalls(action.ToolCalls)
 	default:
 		return fmt.Errorf("unsupported action type %q", action.Type)
 	}
+}
+
+// ValidateToolCallsAdherence 校验批量工具调用的计划归属和独立性。并行调用不能
+// 共享同一计划项，否则模型应先完成前一项检查后再决定下一项。
+func (v *Validator) ValidateToolCallsAdherence(calls []schema.ToolCall, plan *schema.Plan) error {
+	if len(calls) == 0 {
+		return nil
+	}
+	seenPlanItems := make(map[string]struct{}, len(calls))
+	for _, call := range calls {
+		action := schema.Action{
+			Type:       schema.ActionTypeToolCall,
+			PlanItemID: call.PlanItemID,
+			Tool:       call.Tool,
+			Args:       call.Args,
+		}
+		if err := v.ValidatePlanAdherence(action, plan); err != nil {
+			return err
+		}
+		if plan == nil {
+			continue
+		}
+		planItemID := strings.TrimSpace(call.PlanItemID)
+		if _, exists := seenPlanItems[planItemID]; exists {
+			return fmt.Errorf("parallel tool calls cannot share plan item %q", planItemID)
+		}
+		seenPlanItems[planItemID] = struct{}{}
+	}
+	return nil
 }
 
 func (v *Validator) ValidatePlan(plan schema.Plan) error {
@@ -513,6 +544,30 @@ func (v *Validator) validateToolCall(action schema.Action) error {
 		// schema 来自 registry 中真实工具的声明，因此模型不能塞入工具不认识的参数。
 		if err := validateArgsAgainstSchema(decoded, schema); err != nil {
 			return err
+		}
+	}
+	return nil
+}
+
+// validateToolCalls 校验批量 action 的每个调用，并禁止同批调用同一工具。trace 的
+// 旧证据键以 step/tool 为主键，限制工具唯一性可避免并行结果产生歧义。
+func (v *Validator) validateToolCalls(calls []schema.ToolCall) error {
+	if len(calls) < 2 {
+		return fmt.Errorf("tool_calls action requires at least two calls")
+	}
+	seenTools := make(map[string]struct{}, len(calls))
+	for _, call := range calls {
+		toolName := strings.TrimSpace(call.Tool)
+		if _, exists := seenTools[toolName]; exists {
+			return fmt.Errorf("parallel tool calls cannot repeat tool %q", toolName)
+		}
+		seenTools[toolName] = struct{}{}
+		if err := v.validateToolCall(schema.Action{
+			Type: schema.ActionTypeToolCall,
+			Tool: toolName,
+			Args: call.Args,
+		}); err != nil {
+			return fmt.Errorf("parallel tool %q: %w", toolName, err)
 		}
 	}
 	return nil

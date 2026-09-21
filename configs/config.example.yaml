@@ -4,6 +4,14 @@ agent:
   tool_timeout: 5s
   # 单次 diagnose/resume 的总执行预算；独立于每次 LLM/工具调用超时。
   task_timeout: 5m
+  # 单次运行所有工具调用的总上限；批量并行调用也会消耗该预算。
+  max_tool_calls: 24
+  # 同一批独立只读工具调用的最大并发数；有副作用工具不能并行。
+  max_parallel_tools: 2
+  # 发送给模型的观测上下文总字节预算，以及单条工具观测的字节预算。
+  # 原始完整观测仍保存在 .runs 的 trace 中，不会因该限制丢失。
+  context_budget_bytes: 49152
+  tool_output_budget_bytes: 8192
   skill_path: skills/sre-diagnosis/SKILL.md
 
 policy:

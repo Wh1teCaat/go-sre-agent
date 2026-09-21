@@ -3,31 +3,38 @@ package main
 import (
 	"time"
 
+	"github.com/y2/go-sre-agent/internal/agent"
 	runstore "github.com/y2/go-sre-agent/internal/run"
 )
 
 type diagnoseOptions struct {
-	Goal                   string
-	ConfigPath             string
-	BackendBaseURL         string
-	AllowedPostURLs        []string
-	LogFile                string
-	AllowedLogDirs         []string
-	AllowedHosts           []string
-	AllowedContainers      []string
-	RedisKeyPrefixes       []string
-	PostgresDSN            string
-	RedisAddr              string
-	KafkaAddr              string
-	KafkaTopic             string
-	SmokeCommand           []string
-	SmokeDir               string
-	SmokeTimeout           time.Duration
-	WebSocketURL           string
-	MaxSteps               int
-	LLMTimeout             time.Duration
-	ToolTimeout            time.Duration
-	TaskTimeout            time.Duration
+	Goal                  string
+	ConfigPath            string
+	BackendBaseURL        string
+	AllowedPostURLs       []string
+	LogFile               string
+	AllowedLogDirs        []string
+	AllowedHosts          []string
+	AllowedContainers     []string
+	RedisKeyPrefixes      []string
+	PostgresDSN           string
+	RedisAddr             string
+	KafkaAddr             string
+	KafkaTopic            string
+	SmokeCommand          []string
+	SmokeDir              string
+	SmokeTimeout          time.Duration
+	WebSocketURL          string
+	MaxSteps              int
+	LLMTimeout            time.Duration
+	ToolTimeout           time.Duration
+	TaskTimeout           time.Duration
+	MaxToolCalls          int
+	MaxParallelTools      int
+	ContextBudgetBytes    int
+	ToolOutputBudgetBytes int
+	// Progress 仅供命令层消费 runtime 进度，不能影响诊断决策。
+	Progress               func(agent.ProgressEvent)
 	SkillPath              string
 	ToolAllowlist          []string
 	RunDir                 string
@@ -56,6 +63,11 @@ type resumeOptions struct {
 	LLMTimeout             time.Duration
 	ToolTimeout            time.Duration
 	TaskTimeout            time.Duration
+	MaxToolCalls           int
+	MaxParallelTools       int
+	ContextBudgetBytes     int
+	ToolOutputBudgetBytes  int
+	Progress               func(agent.ProgressEvent)
 	ResumeRunning          bool
 }
 
