@@ -11,7 +11,7 @@
 - `internal/agent`: runtime loop, state, prompt boundary, execution boundary.
 - `internal/llm`: provider interface, action planner, generic chat types/config, mock provider, OpenAI-compatible/Ollama client, and Anthropic Messages client.
 - `internal/tools`: tool interface, registry, tool specs, and concrete tool packages.
-- `internal/policy`: action、计划、证据、工具白名单和参数 schema 校验。
+- `internal/policy`: action、计划、结构化证据、根因约束、工具白名单和参数 schema 校验。
 - `internal/trace`: per-step execution trace storage.
 - `internal/report`: markdown report generation from diagnosis and trace evidence.
 - `internal/schema`: structured action, observation, evidence, and diagnosis types.
@@ -22,7 +22,7 @@
 2. Derive LLM-facing observations from the trace store.
 3. Send goal, available tool specs, and observations to the LLM provider for a decision.
 4. Continue directly for a tool/final action; call `Plan` only when the decision sets `NeedsPlan`, then request the action again in the same step.
-5. Validate the returned structured action, plan adherence, final evidence, tool allowlist, and tool args.
+5. Validate the returned structured action, plan adherence, evidence roles, conclusion strength, final evidence, tool allowlist, and tool args.
 6. Before and after each LLM or tool request, atomically checkpoint the run, call ID, and call state.
 7. Execute the selected tool under a timeout and append its trace.
 8. Tool failures return as observations; the next decision may request planning or continue normal ReAct.
@@ -35,7 +35,8 @@
 - Every external call has a durable `call_id`; in-flight calls recovered after interruption become `unknown` rather than successful.
 - A run with an unknown side-effecting `smoke_run` call cannot be resumed automatically.
 - Policy enforces final summary, tool allowlist, required/basic-type arg schema, and rejects unknown tool args when a schema is known.
-- Runtime rejects final evidence whose step/tool pair does not exist in the current trace.
+- Runtime rejects final evidence whose step/tool pair does not exist in the current trace, and keeps check execution status separate from target health.
+- `identified` root causes require a supported fault type and its minimum structured evidence; `suspected` conclusions require both support and pending verification.
 - Tool execution errors are preserved as LLM-facing observations instead of terminating the runtime loop.
 - `log_read` only reads files under configured allowed directories.
 - `http_check` body snippets and `log_read` lines redact common password/token/api_key/secret values before they become observations.

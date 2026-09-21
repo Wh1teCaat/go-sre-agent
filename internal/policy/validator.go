@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/y2/go-sre-agent/internal/schema"
@@ -99,6 +100,18 @@ func (v *Validator) ValidateFinalEvidence(diagnosis *schema.Diagnosis, entries [
 	if err := validateEvidenceRefs(diagnosis.Evidence, entries); err != nil {
 		return err
 	}
+	if err := validateEvidenceRefs(diagnosis.SupportingEvidence, entries); err != nil {
+		return fmt.Errorf("supporting evidence: %w", err)
+	}
+	if err := validateEvidenceRefs(diagnosis.CounterEvidence, entries); err != nil {
+		return fmt.Errorf("counter evidence: %w", err)
+	}
+	if err := validateEvidenceRoles(diagnosis); err != nil {
+		return err
+	}
+	if err := validatePendingVerifications(diagnosis.PendingVerifications); err != nil {
+		return err
+	}
 
 	traceEvidence := make(map[string]trace.Entry, len(entries))
 	for _, entry := range entries {
@@ -106,31 +119,74 @@ func (v *Validator) ValidateFinalEvidence(diagnosis *schema.Diagnosis, entries [
 	}
 	for _, item := range diagnosis.Coverage {
 		planItemID := strings.TrimSpace(item.PlanItemID)
-		hasSuccess := false
-		hasFailure := false
+		hasCompleted := false
+		hasFailed := false
 		for _, evidence := range item.Evidence {
 			entry, ok := traceEvidence[schema.EvidenceKey(evidence.Step, evidence.Tool)]
 			if !ok {
 				return fmt.Errorf("coverage item %q references evidence step %d tool %q with no matching trace entry", planItemID, evidence.Step, evidence.Tool)
 			}
-			if entry.Error == "" {
-				hasSuccess = true
+			if executionStatus(entry) == schema.CheckExecutionCompleted {
+				hasCompleted = true
 			} else {
-				hasFailure = true
+				hasFailed = true
 			}
 		}
 		switch item.Status {
 		case "done":
-			if !hasSuccess {
-				return fmt.Errorf("coverage item %q with status %q requires successful evidence", planItemID, item.Status)
+			if !hasCompleted {
+				return fmt.Errorf("coverage item %q with status %q requires completed check evidence", planItemID, item.Status)
 			}
 		case "blocked":
-			if !hasFailure {
-				return fmt.Errorf("coverage item %q with status %q requires failed evidence", planItemID, item.Status)
+			if !hasFailed {
+				return fmt.Errorf("coverage item %q with status %q requires failed check evidence", planItemID, item.Status)
 			}
 		}
 	}
 	return validateRootCause(diagnosis, entries)
+}
+
+// validateEvidenceRoles 确保证据角色是互斥的，并且所有支持或反证都已列入
+// final.evidence。兼容字段 Evidence 仍是最终报告的完整、可追溯证据目录。
+func validateEvidenceRoles(diagnosis *schema.Diagnosis) error {
+	all := make(map[string]struct{}, len(diagnosis.Evidence))
+	for _, evidence := range diagnosis.Evidence {
+		all[schema.EvidenceKey(evidence.Step, evidence.Tool)] = struct{}{}
+	}
+	supporting := make(map[string]struct{}, len(diagnosis.SupportingEvidence))
+	for _, evidence := range diagnosis.SupportingEvidence {
+		key := schema.EvidenceKey(evidence.Step, evidence.Tool)
+		if _, exists := all[key]; !exists {
+			return fmt.Errorf("supporting evidence step %d tool %q not present in final evidence", evidence.Step, evidence.Tool)
+		}
+		if _, exists := supporting[key]; exists {
+			return fmt.Errorf("duplicate supporting evidence step %d tool %q", evidence.Step, evidence.Tool)
+		}
+		supporting[key] = struct{}{}
+	}
+	for _, evidence := range diagnosis.CounterEvidence {
+		key := schema.EvidenceKey(evidence.Step, evidence.Tool)
+		if _, exists := all[key]; !exists {
+			return fmt.Errorf("counter evidence step %d tool %q not present in final evidence", evidence.Step, evidence.Tool)
+		}
+		if _, exists := supporting[key]; exists {
+			return fmt.Errorf("evidence step %d tool %q cannot be both supporting and counter evidence", evidence.Step, evidence.Tool)
+		}
+	}
+	return nil
+}
+
+// validatePendingVerifications 校验待验证项本身不含不完整的目标身份。
+func validatePendingVerifications(items []schema.PendingVerification) error {
+	for _, item := range items {
+		if strings.TrimSpace(item.Question) == "" {
+			return fmt.Errorf("pending verification requires question")
+		}
+		if (item.Target.Kind == "") != (item.Target.ID == "") {
+			return fmt.Errorf("pending verification target requires both kind and id")
+		}
+	}
+	return nil
 }
 
 // validateRootCause 校验最终诊断的结构化根因声明。结论强度由显式 status 表达
@@ -169,7 +225,195 @@ func validateRootCause(diagnosis *schema.Diagnosis, entries []trace.Entry) error
 			return fmt.Errorf("root cause references evidence step %d tool %q not present in final evidence", evidence.Step, evidence.Tool)
 		}
 	}
+
+	supporting := evidenceKeySet(diagnosis.SupportingEvidence)
+	if rootCause.Status == "identified" {
+		if strings.TrimSpace(rootCause.FaultType) == "" {
+			return fmt.Errorf(`root cause status "identified" requires fault_type`)
+		}
+		if len(diagnosis.SupportingEvidence) == 0 {
+			return fmt.Errorf(`root cause status "identified" requires supporting_evidence`)
+		}
+		if len(diagnosis.CounterEvidence) > 0 {
+			return fmt.Errorf(`root cause status "identified" cannot include counter_evidence; use "suspected" or "undetermined"`)
+		}
+		for _, evidence := range rootCause.Evidence {
+			if _, ok := supporting[schema.EvidenceKey(evidence.Step, evidence.Tool)]; !ok {
+				return fmt.Errorf("identified root cause evidence step %d tool %q must be supporting evidence", evidence.Step, evidence.Tool)
+			}
+		}
+		return validateIdentifiedFaultType(rootCause.FaultType, rootCause.Evidence, entries)
+	}
+	if rootCause.Status == "suspected" {
+		if len(diagnosis.SupportingEvidence) == 0 {
+			return fmt.Errorf(`root cause status "suspected" requires supporting_evidence`)
+		}
+		if len(diagnosis.PendingVerifications) == 0 {
+			return fmt.Errorf(`root cause status "suspected" requires pending_verifications`)
+		}
+		for _, evidence := range rootCause.Evidence {
+			if _, ok := supporting[schema.EvidenceKey(evidence.Step, evidence.Tool)]; !ok {
+				return fmt.Errorf("suspected root cause evidence step %d tool %q must be supporting evidence", evidence.Step, evidence.Tool)
+			}
+		}
+	}
 	return nil
+}
+
+// evidenceKeySet 将证据引用转换为便于交集判断的稳定键集合。
+func evidenceKeySet(evidence []schema.Evidence) map[string]struct{} {
+	keys := make(map[string]struct{}, len(evidence))
+	for _, item := range evidence {
+		keys[schema.EvidenceKey(item.Step, item.Tool)] = struct{}{}
+	}
+	return keys
+}
+
+// validateIdentifiedFaultType 为常见故障定义最低必要证据，而不是尝试从 summary
+// 的自然语言推导根因。规则是必要条件，不能替代当前运行中的人工或模型判断。
+func validateIdentifiedFaultType(faultType string, evidence []schema.Evidence, entries []trace.Entry) error {
+	byKey := make(map[string]trace.Entry, len(entries))
+	for _, entry := range entries {
+		byKey[schema.EvidenceKey(entry.Step, entry.ToolName)] = entry
+	}
+	selected := make([]trace.Entry, 0, len(evidence))
+	for _, item := range evidence {
+		if entry, ok := byKey[schema.EvidenceKey(item.Step, item.Tool)]; ok {
+			selected = append(selected, entry)
+		}
+	}
+
+	switch faultType {
+	case "application_error_log":
+		if hasCompletedTargetHealth(selected, []string{"http_check"}, schema.TargetHealthUnhealthy) &&
+			hasCompletedTool(selected, "log_read") {
+			return nil
+		}
+		return fmt.Errorf(`fault_type "application_error_log" requires completed unhealthy http_check evidence and completed log_read evidence`)
+	case "dependency_unavailable":
+		if hasCompletedTargetHealth(selected, []string{"postgres_ping", "postgres_check", "redis_ping", "redis_check", "kafka_check"}, schema.TargetHealthUnhealthy) {
+			return nil
+		}
+		return fmt.Errorf(`fault_type "dependency_unavailable" requires completed direct dependency evidence with target_health "unhealthy"`)
+	case "redis_instance_mismatch":
+		for _, entry := range selected {
+			if entry.ToolName == "redis_check" && executionStatus(entry) == schema.CheckExecutionCompleted && hasFalseFact(entry.Result, "instance_match") {
+				return nil
+			}
+		}
+		return fmt.Errorf(`fault_type "redis_instance_mismatch" requires completed redis_check evidence with fact "instance_match" = false`)
+	case "websocket_handshake_rejected":
+		if hasCompletedTargetHealth(selected, []string{"websocket_check"}, schema.TargetHealthUnhealthy) {
+			return nil
+		}
+		return fmt.Errorf(`fault_type "websocket_handshake_rejected" requires completed websocket_check evidence with target_health "unhealthy"`)
+	case "kafka_consumer_stall":
+		for _, entry := range selected {
+			if entry.ToolName != "kafka_check" || executionStatus(entry) != schema.CheckExecutionCompleted {
+				continue
+			}
+			if entry.Result.TargetHealth == schema.TargetHealthDegraded || entry.Result.TargetHealth == schema.TargetHealthUnhealthy {
+				if lag, ok := integerObservationValue(entry.Result, "active_lag"); ok && lag > 0 {
+					return nil
+				}
+			}
+		}
+		return fmt.Errorf(`fault_type "kafka_consumer_stall" requires completed degraded kafka_check evidence with active_lag > 0`)
+	default:
+		return fmt.Errorf("unsupported identified fault_type %q", faultType)
+	}
+}
+
+// hasCompletedTool 判断指定工具是否提供了已完成的检查结果。
+func hasCompletedTool(entries []trace.Entry, toolName string) bool {
+	for _, entry := range entries {
+		if entry.ToolName == toolName && executionStatus(entry) == schema.CheckExecutionCompleted {
+			return true
+		}
+	}
+	return false
+}
+
+// hasCompletedTargetHealth 在指定工具中查找同时满足执行和目标健康状态的观测。
+func hasCompletedTargetHealth(entries []trace.Entry, toolNames []string, health string) bool {
+	allowed := make(map[string]struct{}, len(toolNames))
+	for _, toolName := range toolNames {
+		allowed[toolName] = struct{}{}
+	}
+	for _, entry := range entries {
+		if _, ok := allowed[entry.ToolName]; ok && executionStatus(entry) == schema.CheckExecutionCompleted && entry.Result.TargetHealth == health {
+			return true
+		}
+	}
+	return false
+}
+
+// hasFalseFact 判断 observation 的数据或事实中是否明确记录某键为 false。
+func hasFalseFact(observation schema.Observation, key string) bool {
+	value, ok := integerObservationValue(observation, key)
+	if ok && value == 0 {
+		return true
+	}
+	if observation.Data != nil {
+		if value, ok := observation.Data[key].(bool); ok && !value {
+			return true
+		}
+	}
+	for _, fact := range observation.Facts {
+		if fact.Key == key {
+			if value, ok := fact.Value.(bool); ok && !value {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// integerObservationValue 优先从原始数据、再从原子事实中读取整数值。
+func integerObservationValue(observation schema.Observation, key string) (int, bool) {
+	if observation.Data != nil {
+		if value, ok := integerValue(observation.Data[key]); ok {
+			return value, true
+		}
+	}
+	for _, fact := range observation.Facts {
+		if fact.Key == key {
+			return integerValue(fact.Value)
+		}
+	}
+	return 0, false
+}
+
+// integerValue 兼容 JSON 解码后常见的整数表示。
+func integerValue(value any) (int, bool) {
+	switch typed := value.(type) {
+	case int:
+		return typed, true
+	case int64:
+		return int(typed), true
+	case float64:
+		return int(typed), true
+	case json.Number:
+		value, err := typed.Int64()
+		return int(value), err == nil
+	case string:
+		value, err := strconv.Atoi(typed)
+		return value, err == nil
+	default:
+		return 0, false
+	}
+}
+
+// executionStatus 兼容阶段三之前的 trace：旧记录没有 CheckStatus 时，仍按原有
+// Error 语义判断检查是否完成；新记录优先使用显式状态。
+func executionStatus(entry trace.Entry) string {
+	if entry.Result.CheckStatus != "" {
+		return entry.Result.CheckStatus
+	}
+	if entry.Error != "" {
+		return schema.CheckExecutionFailed
+	}
+	return schema.CheckExecutionCompleted
 }
 
 // ValidateFinalCoverage 校验 final 是否覆盖当前 plan。

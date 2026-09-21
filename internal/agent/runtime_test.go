@@ -87,6 +87,63 @@ func TestRuntimeRunsToolThenFinalAction(t *testing.T) {
 	}
 }
 
+func TestRuntimeAddsStructuredObservationMetadata(t *testing.T) {
+	registry := tools.NewRegistry()
+	if err := registry.Register(runtimeTool{}); err != nil {
+		t.Fatalf("register tool: %v", err)
+	}
+	store := new(trace.MemoryStore)
+	provider := &captureProvider{actions: []schema.Action{
+		{
+			Type: schema.ActionTypeToolCall,
+			Tool: "http_check",
+			Args: json.RawMessage(`{"url":"http://user:secret@localhost:8080/health?token=hidden"}`),
+		},
+		{
+			Type: schema.ActionTypeFinal,
+			Final: &schema.Diagnosis{
+				Summary:   "检查已完成。",
+				RootCause: &schema.RootCause{Status: "undetermined"},
+				Evidence:  []schema.Evidence{{Step: 1, Tool: "http_check"}},
+			},
+		},
+	}}
+	runtime := NewRuntime(RuntimeConfig{MaxSteps: 2}, provider, registry, policy.NewValidator(policy.Config{
+		ToolAllowlist: []string{"http_check"},
+		ToolSchemas: map[string]tools.ToolSchema{
+			"http_check": runtimeTool{}.Spec().Schema,
+		},
+	}), store)
+
+	if _, err := runtime.Run(context.Background(), "检查后端"); err != nil {
+		t.Fatalf("run runtime: %v", err)
+	}
+	entries := store.List()
+	if len(entries) != 2 {
+		t.Fatalf("trace entries = %d, want tool and final", len(entries))
+	}
+	observation := entries[0].Result
+	if observation.CheckStatus != schema.CheckExecutionCompleted || observation.TargetHealth != schema.TargetHealthHealthy {
+		t.Fatalf("check/target status = %q/%q, want completed/healthy", observation.CheckStatus, observation.TargetHealth)
+	}
+	if observation.ObservedAt.IsZero() {
+		t.Fatal("observation observed_at is empty")
+	}
+	if observation.Target.Kind != "endpoint" || observation.Target.ID != "http://localhost:8080/health" {
+		t.Fatalf("target = %#v, want redacted endpoint identity", observation.Target)
+	}
+	if len(observation.Facts) == 0 || observation.Facts[0].Key != "summary" {
+		t.Fatalf("facts = %#v, want structured summary fact", observation.Facts)
+	}
+	if len(provider.requests) != 2 {
+		t.Fatalf("decision requests = %d, want 2", len(provider.requests))
+	}
+	seen := provider.requests[1].Observations
+	if len(seen) != 1 || seen[0].Target.ID != observation.Target.ID || seen[0].CheckStatus != schema.CheckExecutionCompleted {
+		t.Fatalf("LLM observation = %#v, want structured trace observation", seen)
+	}
+}
+
 func TestRuntimeRejectsFinalWithoutEvidenceAfterToolExecution(t *testing.T) {
 	registry := tools.NewRegistry()
 	if err := registry.Register(runtimeTool{}); err != nil {

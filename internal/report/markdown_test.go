@@ -113,3 +113,61 @@ func TestMarkdownRedactsSensitiveContent(t *testing.T) {
 		t.Fatalf("markdown was not redacted:\n%s", markdown)
 	}
 }
+
+func TestMarkdownShowsStructuredEvidenceAndPendingVerification(t *testing.T) {
+	observedAt := time.Date(2026, 9, 21, 8, 30, 0, 0, time.UTC)
+	markdown := Markdown(Input{
+		Diagnosis: schema.Diagnosis{
+			Summary: "接口异常可能与认证分支有关。",
+			RootCause: &schema.RootCause{
+				Status:    "suspected",
+				Statement: "当前日志不足以确定认证分支。",
+			},
+			Evidence: []schema.Evidence{
+				{Step: 1, Tool: "http_check"},
+				{Step: 2, Tool: "log_read"},
+			},
+			SupportingEvidence: []schema.Evidence{{Step: 1, Tool: "http_check"}},
+			CounterEvidence:    []schema.Evidence{{Step: 2, Tool: "log_read"}},
+			PendingVerifications: []schema.PendingVerification{{
+				Question:      "关联同一请求的认证日志",
+				Reason:        "确认是否命中相同分支",
+				Target:        schema.TargetIdentity{Kind: "endpoint", ID: "http://api.local/login"},
+				SuggestedTool: "log_read",
+			}},
+		},
+		Trace: []trace.Entry{
+			{
+				Step:     1,
+				ToolName: "http_check",
+				Result: schema.Observation{
+					Summary: "POST /login returned 500",
+					Facts: []schema.Fact{{
+						Key:        "status",
+						Value:      500,
+						ObservedAt: observedAt,
+						Target:     schema.TargetIdentity{Kind: "endpoint", ID: "http://api.local/login"},
+					}},
+				},
+			},
+			{
+				Step:     2,
+				ToolName: "log_read",
+				Result:   schema.Observation{Summary: "read 0 log lines"},
+			},
+		},
+	})
+
+	for _, want := range []string{
+		"## Supporting Evidence",
+		"## Counter Evidence",
+		"## Pending Verifications",
+		"## Structured Facts",
+		"`status` = `500` [target=endpoint:http://api.local/login, observed_at=2026-09-21T08:30:00Z]",
+		"关联同一请求的认证日志: 确认是否命中相同分支 [target=endpoint:http://api.local/login] [tool=log_read]",
+	} {
+		if !strings.Contains(markdown, want) {
+			t.Fatalf("markdown missing %q:\n%s", want, markdown)
+		}
+	}
+}

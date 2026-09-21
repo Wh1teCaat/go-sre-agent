@@ -38,7 +38,7 @@ When `mode` is `decision`, return one of these shapes:
 {"needs_plan":true}
 {"type":"tool_call","thought_summary":"简短的取证理由","tool":"tool_name","args":{}}
 {"type":"tool_call","thought_summary":"简短的取证理由","plan_item_id":"backend","tool":"tool_name","args":{}}
-{"type":"final","thought_summary":"说明为何证据足够","final":{"summary":"基于证据的结论","root_cause":{"status":"undetermined","statement":"说明当前证据为何无法定位根因"},"evidence":[{"step":1,"tool":"tool_name","summary":"具体观测"}],"recommendations":["可执行的下一步"]}}
+{"type":"final","thought_summary":"说明为何证据足够","final":{"summary":"基于证据的结论","root_cause":{"status":"undetermined","statement":"说明当前证据为何无法定位根因"},"evidence":[{"step":1,"tool":"tool_name","summary":"具体观测"}],"supporting_evidence":[{"step":1,"tool":"tool_name","summary":"具体观测"}],"pending_verifications":[{"question":"还需要验证什么","reason":"它会如何改变结论","suggested_tool":"tool_name"}],"recommendations":["可执行的下一步"]}}
 ```
 
 Return `needs_plan` only when `planning_allowed` is `true`. When it is `false`,
@@ -87,6 +87,37 @@ as:
 
 ## Evidence and content rules
 
+- Every observation has a runtime-generated `check_status`, `target_health`,
+  `target`, `observed_at`, and `facts`. `check_status=completed` means the
+  check returned a usable observation; it does not mean the target is healthy.
+  A transport error, timeout, cancellation, or missing result must not be
+  restated as a target-health fact. Use `target_health` only within the target
+  and time recorded by the observation.
+- Keep `final.evidence` as the complete list of cited trace references. Put
+  every evidence item used to support the conclusion in
+  `final.supporting_evidence`; put observations that weaken or contradict the
+  conclusion in `final.counter_evidence`. A reference cannot be in both lists,
+  and both lists must be subsets of `final.evidence`.
+- A `suspected` root cause requires non-empty `supporting_evidence` and at
+  least one `pending_verifications` item. Pending verification is a question
+  to answer next, not a newly asserted fact. `undetermined` remains the right
+  status when the observations cannot distinguish causes.
+- An `identified` root cause requires `root_cause.fault_type`,
+  `root_cause.evidence`, non-empty `supporting_evidence`, and no
+  `counter_evidence`. Every root-cause evidence reference must also be a
+  supporting reference. The only supported identified fault types and their
+  minimum evidence are:
+  - `application_error_log`: an unhealthy completed `http_check` plus a
+    completed `log_read`.
+  - `dependency_unavailable`: a completed direct dependency check with
+    `target_health=unhealthy`.
+  - `redis_instance_mismatch`: a completed `redis_check` with the
+    `instance_match=false` fact.
+  - `websocket_handshake_rejected`: a completed unhealthy `websocket_check`.
+  - `kafka_consumer_stall`: a completed degraded/unhealthy `kafka_check` with
+    `active_lag > 0`.
+  These are necessary evidence minima, not permission to infer omitted facts
+  from a summary. If a rule cannot be met, use `suspected` or `undetermined`.
 - Whenever the final cites evidence, `final.root_cause` is mandatory with a
   `status` of `identified`, `suspected`, or `undetermined`. Use `identified`
   only when cited trace evidence directly proves the root cause, and list that

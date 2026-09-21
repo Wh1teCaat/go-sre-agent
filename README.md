@@ -14,6 +14,7 @@
 - 为同一个排障问题保存隔离的会话 Markdown 记忆，连续诊断只加载指定会话。
 - 通过工具白名单、目标白名单、参数校验、超时和脱敏限制执行边界。
 - 最终报告只能引用本次运行中真实存在的工具证据。
+- 每条工具证据会保留检查执行状态、目标健康状态、目标身份、时间和脱敏后的结构化事实。
 
 ## 工作流程
 
@@ -183,6 +184,7 @@ go run ./cmd/sre-agent report --run-id <run_id>
 - 常见 password、token、API key 和 secret 会在 trace 中脱敏。
 - 模型生成的 evidence 必须匹配本次真实 trace。
 - 根因结论必须以结构化 `root_cause` 声明（`identified`/`suspected`/`undetermined`）；判定为 `identified` 时必须绑定真实 trace 证据。
+- `identified` 还需满足故障类型的必要证据规则；`suspected` 必须明确支持证据和待验证事项。字段说明与示例见[结构化证据与根因约束](docs/evidence-constraints.md)。
 - `docker_probe` 只能执行固定的只读命令模板；`redis_scan` 受键前缀白名单约束。
 - `postgres_check`/`redis_check` 会输出实例身份指纹（版本、平台、run_id），用于识别端口被无关实例占据的冒名场景。
 - `smoke_run` 是唯一的非只读工具（测试账号真实写入），默认不存在，仅在配置显式写出 `targets.smoke_command` 时注册，且命令内容模型不可指定。

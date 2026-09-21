@@ -328,10 +328,13 @@ func TestValidatorRequiresStructuredRootCause(t *testing.T) {
 	for name, rootCause := range map[string]*schema.RootCause{
 		"undetermined": {Status: "undetermined"},
 		"suspected":    {Status: "suspected", Statement: "疑似凭证问题，但证据不足"},
-		"identified":   {Status: "identified", Statement: "日志证明请求命中密码校验失败分支", Evidence: evidence},
 	} {
 		t.Run("allows "+name, func(t *testing.T) {
 			diagnosis := &schema.Diagnosis{Summary: "结论", Evidence: evidence, RootCause: rootCause}
+			if rootCause.Status == "suspected" {
+				diagnosis.SupportingEvidence = evidence
+				diagnosis.PendingVerifications = []schema.PendingVerification{{Question: "确认认证失败的具体分支"}}
+			}
 			if err := validator.ValidateFinalEvidence(diagnosis, entries); err != nil {
 				t.Fatalf("validate root cause: %v", err)
 			}
@@ -374,8 +377,8 @@ func TestValidatorRequiresCoverageStatusToMatchTraceOutcome(t *testing.T) {
 		traceError string
 		want       string
 	}{
-		{name: "done needs success", status: "done", traceError: "connection refused", want: "requires successful evidence"},
-		{name: "blocked needs failure", status: "blocked", want: "requires failed evidence"},
+		{name: "done needs completed check", status: "done", traceError: "connection refused", want: "requires completed check evidence"},
+		{name: "blocked needs failed check", status: "blocked", want: "requires failed check evidence"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			validator := NewValidator(Config{})
@@ -575,5 +578,175 @@ func TestValidatorRequiresEvidenceWhenTraceExists(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "final diagnosis requires evidence when trace exists") {
 		t.Fatalf("error = %q, want missing evidence error", err.Error())
+	}
+}
+
+func TestValidatorSeparatesCheckExecutionFromTargetHealth(t *testing.T) {
+	validator := NewValidator(Config{})
+	evidence := schema.Evidence{Step: 1, Tool: "http_check"}
+	entries := []trace.Entry{{
+		Step:     1,
+		ToolName: "http_check",
+		Result: schema.Observation{
+			CheckStatus:  schema.CheckExecutionCompleted,
+			TargetHealth: schema.TargetHealthUnhealthy,
+		},
+	}}
+
+	diagnosis := &schema.Diagnosis{
+		Summary:   "HTTP 检查已完成，目标返回异常状态。",
+		RootCause: &schema.RootCause{Status: "undetermined"},
+		Evidence:  []schema.Evidence{evidence},
+		Coverage: []schema.CoverageItem{{
+			PlanItemID: "backend",
+			Status:     "done",
+			Evidence:   []schema.Evidence{evidence},
+		}},
+	}
+	if err := validator.ValidateFinalEvidence(diagnosis, entries); err != nil {
+		t.Fatalf("completed check with unhealthy target should cover a check: %v", err)
+	}
+
+	diagnosis.Coverage[0].Status = "blocked"
+	err := validator.ValidateFinalEvidence(diagnosis, entries)
+	if err == nil || !strings.Contains(err.Error(), "requires failed check evidence") {
+		t.Fatalf("error = %v, want blocked coverage to require a failed check", err)
+	}
+}
+
+func TestValidatorRequiresStructuredEvidenceForSuspectedAndIdentified(t *testing.T) {
+	validator := NewValidator(Config{})
+	httpEvidence := schema.Evidence{Step: 1, Tool: "http_check"}
+	logEvidence := schema.Evidence{Step: 2, Tool: "log_read"}
+	entries := []trace.Entry{
+		{Step: 1, ToolName: "http_check", Result: schema.Observation{CheckStatus: schema.CheckExecutionCompleted, TargetHealth: schema.TargetHealthUnhealthy}},
+		{Step: 2, ToolName: "log_read", Result: schema.Observation{CheckStatus: schema.CheckExecutionCompleted, TargetHealth: schema.TargetHealthNotApplicable}},
+	}
+
+	identified := &schema.Diagnosis{
+		Summary:  "接口异常与应用日志共同指向同一错误。",
+		Evidence: []schema.Evidence{httpEvidence, logEvidence},
+		RootCause: &schema.RootCause{
+			Status:    "identified",
+			FaultType: "application_error_log",
+			Statement: "应用日志记录了与 HTTP 500 对应的错误。",
+			Evidence:  []schema.Evidence{httpEvidence, logEvidence},
+		},
+	}
+	if err := validator.ValidateFinalEvidence(identified, entries); err == nil || !strings.Contains(err.Error(), "requires supporting_evidence") {
+		t.Fatalf("error = %v, want identified supporting evidence requirement", err)
+	}
+
+	identified.SupportingEvidence = []schema.Evidence{httpEvidence, logEvidence}
+	if err := validator.ValidateFinalEvidence(identified, entries); err != nil {
+		t.Fatalf("validate identified application error: %v", err)
+	}
+
+	identified.CounterEvidence = []schema.Evidence{logEvidence}
+	err := validator.ValidateFinalEvidence(identified, entries)
+	if err == nil || !strings.Contains(err.Error(), "cannot be both supporting and counter evidence") {
+		t.Fatalf("error = %v, want contradictory evidence role error", err)
+	}
+
+	suspected := &schema.Diagnosis{
+		Summary:            "疑似认证分支异常。",
+		RootCause:          &schema.RootCause{Status: "suspected", Statement: "日志中的认证错误可能与接口失败有关。"},
+		Evidence:           []schema.Evidence{logEvidence},
+		SupportingEvidence: []schema.Evidence{logEvidence},
+	}
+	err = validator.ValidateFinalEvidence(suspected, entries)
+	if err == nil || !strings.Contains(err.Error(), "requires pending_verifications") {
+		t.Fatalf("error = %v, want suspected pending verification requirement", err)
+	}
+	suspected.PendingVerifications = []schema.PendingVerification{{
+		Question:      "检查该请求是否命中相同认证分支",
+		Target:        schema.TargetIdentity{Kind: "endpoint", ID: "http://api.local/login"},
+		SuggestedTool: "log_read",
+	}}
+	if err := validator.ValidateFinalEvidence(suspected, entries); err != nil {
+		t.Fatalf("validate suspected conclusion: %v", err)
+	}
+}
+
+func TestValidatorEnforcesCommonIdentifiedFaultEvidenceRules(t *testing.T) {
+	validator := NewValidator(Config{})
+	for name, test := range map[string]struct {
+		faultType string
+		entry     trace.Entry
+	}{
+		"dependency unavailable": {
+			faultType: "dependency_unavailable",
+			entry: trace.Entry{Step: 1, ToolName: "redis_check", Result: schema.Observation{
+				CheckStatus: schema.CheckExecutionCompleted, TargetHealth: schema.TargetHealthUnhealthy,
+			}},
+		},
+		"redis instance mismatch": {
+			faultType: "redis_instance_mismatch",
+			entry: trace.Entry{Step: 1, ToolName: "redis_check", Result: schema.Observation{
+				CheckStatus: schema.CheckExecutionCompleted,
+				Facts:       []schema.Fact{{Key: "instance_match", Value: false}},
+			}},
+		},
+		"websocket handshake rejected": {
+			faultType: "websocket_handshake_rejected",
+			entry: trace.Entry{Step: 1, ToolName: "websocket_check", Result: schema.Observation{
+				CheckStatus: schema.CheckExecutionCompleted, TargetHealth: schema.TargetHealthUnhealthy,
+			}},
+		},
+		"kafka consumer stall": {
+			faultType: "kafka_consumer_stall",
+			entry: trace.Entry{Step: 1, ToolName: "kafka_check", Result: schema.Observation{
+				CheckStatus:  schema.CheckExecutionCompleted,
+				TargetHealth: schema.TargetHealthDegraded,
+				Data:         map[string]any{"active_lag": 3},
+			}},
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			evidence := schema.Evidence{Step: 1, Tool: test.entry.ToolName}
+			diagnosis := &schema.Diagnosis{
+				Summary:            "已满足该常见故障的最低直接证据。",
+				Evidence:           []schema.Evidence{evidence},
+				SupportingEvidence: []schema.Evidence{evidence},
+				RootCause: &schema.RootCause{
+					Status:    "identified",
+					FaultType: test.faultType,
+					Statement: "结构化检查已直接给出该故障信号。",
+					Evidence:  []schema.Evidence{evidence},
+				},
+			}
+			if err := validator.ValidateFinalEvidence(diagnosis, []trace.Entry{test.entry}); err != nil {
+				t.Fatalf("validate identified %s: %v", test.faultType, err)
+			}
+		})
+	}
+}
+
+func TestValidatorRejectsGenericDependencyErrorAsIdentified(t *testing.T) {
+	validator := NewValidator(Config{})
+	evidence := schema.Evidence{Step: 1, Tool: "redis_ping"}
+	diagnosis := &schema.Diagnosis{
+		Summary:            "Redis 检查出现连接错误。",
+		Evidence:           []schema.Evidence{evidence},
+		SupportingEvidence: []schema.Evidence{evidence},
+		RootCause: &schema.RootCause{
+			Status:    "identified",
+			FaultType: "dependency_unavailable",
+			Statement: "Redis 不可用。",
+			Evidence:  []schema.Evidence{evidence},
+		},
+	}
+	entries := []trace.Entry{{
+		Step:     1,
+		ToolName: "redis_ping",
+		Error:    "connection refused",
+		Result: schema.Observation{
+			CheckStatus:  schema.CheckExecutionFailed,
+			TargetHealth: schema.TargetHealthUnknown,
+		},
+	}}
+	err := validator.ValidateFinalEvidence(diagnosis, entries)
+	if err == nil || !strings.Contains(err.Error(), `requires completed direct dependency evidence`) {
+		t.Fatalf("error = %v, want generic connection error to remain non-identified", err)
 	}
 }
