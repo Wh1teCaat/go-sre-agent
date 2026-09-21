@@ -38,6 +38,9 @@ func TestLegacyV1FailedRunCanResumeWithMockSkeleton(t *testing.T) {
 	if result.State.RunID != legacyV1FailedRunID {
 		t.Fatalf("resumed run id = %q, want %q", result.State.RunID, legacyV1FailedRunID)
 	}
+	if result.State.SessionID != "" {
+		t.Fatalf("resumed legacy session_id = %q, want empty", result.State.SessionID)
+	}
 	if result.State.Status != runstore.StatusCompleted {
 		t.Fatalf("resumed status = %q, want completed", result.State.Status)
 	}

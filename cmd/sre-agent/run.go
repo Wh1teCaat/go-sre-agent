@@ -15,19 +15,26 @@ import (
 // saveDiagnosisResult 持久化运行状态，并保留诊断错误与保存错误。
 // 参数: result 为运行结果，runErr 为诊断错误；返回: 合并后的错误，全部成功时返回 nil。
 func saveDiagnosisResult(result diagnoseResult, runErr error) error {
-	var saveErr error
+	var persistErr error
 	if result.State.RunID != "" {
-		saveErr = runstore.NewStore(result.RunDir).Save(result.State)
+		if err := runstore.NewStore(result.RunDir).Save(result.State); err != nil {
+			persistErr = fmt.Errorf("save run state: %w", err)
+		} else if err := updateSessionForRun(result); err != nil {
+			persistErr = fmt.Errorf("save session state: %w", err)
+		}
 	}
 	if runErr == nil {
-		return saveErr
+		if persistErr != nil && result.State.RunID != "" {
+			return fmt.Errorf("run_id: %s\n%w", result.State.RunID, persistErr)
+		}
+		return persistErr
 	}
 	message := tools.RedactSensitive(runErr.Error())
 	if result.State.RunID != "" {
 		message = fmt.Sprintf("run_id: %s\n%s", result.State.RunID, message)
 	}
-	if saveErr != nil {
-		message = fmt.Sprintf("%s\nsave run state: %v", message, saveErr)
+	if persistErr != nil {
+		message = fmt.Sprintf("%s\n%v", message, persistErr)
 	}
 	return fmt.Errorf("%s", message)
 }
@@ -48,6 +55,7 @@ func readDiagnosisStatus(opts runOptions) (string, error) {
 	}
 	view := struct {
 		RunID      string          `json:"run_id"`
+		SessionID  string          `json:"session_id,omitempty"`
 		Goal       string          `json:"goal"`
 		Status     runstore.Status `json:"status"`
 		Plan       schema.Plan     `json:"plan"`
@@ -57,6 +65,7 @@ func readDiagnosisStatus(opts runOptions) (string, error) {
 		UpdatedAt  time.Time       `json:"updated_at"`
 	}{
 		RunID:      state.RunID,
+		SessionID:  state.SessionID,
 		Goal:       tools.RedactSensitive(state.Goal),
 		Status:     state.Status,
 		Plan:       state.Plan,

@@ -210,43 +210,6 @@ func TestRunStatusAndReportLoadPersistedRun(t *testing.T) {
 	}
 }
 
-func TestMemoryHintsUseCompletedRunsAndRedactSecrets(t *testing.T) {
-	runDir := t.TempDir()
-	store := runstore.NewStore(runDir)
-	for _, state := range []runstore.State{
-		{
-			RunID:  "run_old",
-			Goal:   `诊断登录 password="secret"`,
-			Status: runstore.StatusCompleted,
-			Diagnosis: &schema.Diagnosis{
-				Summary: "历史 token=abc123",
-			},
-			UpdatedAt: time.Unix(20, 0),
-		},
-		{
-			RunID:  "run_current",
-			Goal:   "当前运行",
-			Status: runstore.StatusCompleted,
-			Diagnosis: &schema.Diagnosis{
-				Summary: "不应作为自己的记忆",
-			},
-			UpdatedAt: time.Unix(30, 0),
-		},
-	} {
-		if err := store.Save(state); err != nil {
-			t.Fatalf("save state: %v", err)
-		}
-	}
-
-	memories := memoryHintsForDiagnose(runDir, "run_current")
-	if len(memories) != 1 || memories[0].SourceRunID != "run_old" {
-		t.Fatalf("memories = %#v", memories)
-	}
-	if strings.Contains(memories[0].Subject, "secret") || strings.Contains(memories[0].Content, "abc123") {
-		t.Fatalf("memory leaked secret: %#v", memories[0])
-	}
-}
-
 func TestResumeDiagnosisRunContinuesPersistedRunWithExistingTrace(t *testing.T) {
 	clearLLMEnv(t)
 	t.Setenv("SRE_AGENT_LLM_PROVIDER", "openai_compatible")

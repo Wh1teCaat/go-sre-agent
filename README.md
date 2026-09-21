@@ -10,6 +10,7 @@
 - 支持 OpenAI-compatible、Ollama、Anthropic 以及本地 mock 场景。
 - 默认使用 ReAct；复杂任务由 LLM 按需请求 plan，plan 不占用执行 step。
 - 保存完整 trace 和运行状态，支持查询、恢复和重新生成报告。
+- 为同一个排障问题保存隔离的会话 Markdown 记忆，连续诊断只加载指定会话。
 - 通过工具白名单、目标白名单、参数校验、超时和脱敏限制执行边界。
 - 最终报告只能引用本次运行中真实存在的工具证据。
 
@@ -67,7 +68,7 @@ go run ./cmd/sre-agent diagnose \
   --goal "诊断登录接口为什么返回 500"
 ```
 
-报告会输出到终端；配置了 `paths.report_dir` 后也会保存为 Markdown 文件。运行状态默认保存在 `.runs/`。
+报告会输出到终端；配置了 `paths.report_dir` 后也会保存为 Markdown 文件。运行状态默认保存在 `.runs/`，同一问题的会话状态默认保存在 `.sessions/`。
 
 ## 配置
 
@@ -91,9 +92,11 @@ policy:
 
 paths:
   run_dir: .runs
+  session_dir: .sessions
   report_dir: reports
 
 targets:
+  environment: local
   backend_base_url: http://localhost:8080
   # http_check 允许 POST 复现的诊断地址；未配置时回退为 backend_base_url 派生的登录地址。
   allowed_post_urls:
@@ -131,9 +134,14 @@ go run ./cmd/sre-agent status --run-id <run_id>
 # 恢复未完成的运行
 go run ./cmd/sre-agent resume --run-id <run_id> --max-steps 20
 
+# 使用已有会话开始新的连续诊断 run
+go run ./cmd/sre-agent diagnose --session-id <session_id> --goal "复查当前问题"
+
 # 根据已保存的 trace 重新生成报告
 go run ./cmd/sre-agent report --run-id <run_id>
 ```
+
+会话记忆的文件结构、隔离规则和人工编辑处理见 [docs/session-memory.md](docs/session-memory.md)。
 
 可用 mock 场景：
 

@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	runstore "github.com/y2/go-sre-agent/internal/run"
 )
 
 const legacyV1CompletedRunID = "run_legacy_v1"
@@ -28,6 +30,13 @@ func TestLegacyV1CompletedRunSupportsStatusAndReport(t *testing.T) {
 	runDir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(runDir, legacyV1CompletedRunID+".json"), fixture, 0o600); err != nil {
 		t.Fatalf("copy legacy fixture to run dir: %v", err)
+	}
+	loaded, err := runstore.NewStore(runDir).Load(legacyV1CompletedRunID)
+	if err != nil {
+		t.Fatalf("load legacy fixture: %v", err)
+	}
+	if loaded.SessionID != "" {
+		t.Fatalf("legacy fixture session_id = %q, want empty", loaded.SessionID)
 	}
 
 	status, err := readDiagnosisStatus(runOptions{RunID: legacyV1CompletedRunID, RunDir: runDir})

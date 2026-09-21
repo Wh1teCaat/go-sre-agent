@@ -19,6 +19,11 @@ import (
 // 参数: ctx 控制取消，opts 为诊断选项，mockScenario 为可选 mock；返回: 运行结果和诊断错误。
 func startDiagnosisRun(ctx context.Context, opts diagnoseOptions, mockScenario string) (diagnoseResult, error) {
 	startedAt := time.Now().UTC()
+	var err error
+	opts, err = prepareNewDiagnosisSession(opts, startedAt)
+	if err != nil {
+		return diagnoseResult{}, err
+	}
 	return executeDiagnosisRun(ctx, opts, runstore.NewRunID(startedAt), startedAt, nil, schema.Plan{}, mockScenario)
 }
 
@@ -60,12 +65,16 @@ func resumeDiagnosisRun(ctx context.Context, opts resumeOptions, mockScenario st
 	}
 
 	return executeDiagnosisRun(ctx, diagnoseOptions{
-		Goal:        previous.Goal,
-		ConfigPath:  opts.ConfigPath,
-		MaxSteps:    opts.MaxSteps,
-		LLMTimeout:  opts.LLMTimeout,
-		ToolTimeout: opts.ToolTimeout,
-		RunDir:      runDir,
+		Goal:                   previous.Goal,
+		ConfigPath:             opts.ConfigPath,
+		MaxSteps:               opts.MaxSteps,
+		LLMTimeout:             opts.LLMTimeout,
+		ToolTimeout:            opts.ToolTimeout,
+		RunDir:                 runDir,
+		SessionID:              previous.SessionID,
+		SessionDir:             opts.SessionDir,
+		Environment:            opts.Environment,
+		OverwriteSessionMemory: opts.OverwriteSessionMemory,
 	}, previous.RunID, previous.CreatedAt, previous.Trace, previous.Plan, mockScenario)
 }
 
@@ -74,9 +83,13 @@ func resumeDiagnosisRun(ctx context.Context, opts resumeOptions, mockScenario st
 func executeDiagnosisRun(ctx context.Context, opts diagnoseOptions, runID string, createdAt time.Time, existingTrace []trace.Entry, existingPlan schema.Plan, mockScenario string) (diagnoseResult, error) {
 	setup, err := initializeDiagnosis(opts, mockScenario)
 	if err != nil {
-		return diagnoseResult{RunDir: setup.config.RunDir, ReportDir: setup.config.ReportDir}, err
+		return diagnoseResult{RunDir: setup.config.RunDir, SessionDir: setup.config.SessionDir, Environment: setup.config.Environment, OverwriteSessionMemory: setup.config.OverwriteSessionMemory, ReportDir: setup.config.ReportDir}, err
 	}
 	cfg := setup.config
+	memories, err := sessionMemoryHintsForDiagnose(cfg.SessionDir, cfg.SessionID, cfg.Environment, cfg.NewSession, cfg.OverwriteSessionMemory)
+	if err != nil {
+		return diagnoseResult{RunDir: cfg.RunDir, SessionDir: cfg.SessionDir, Environment: cfg.Environment, OverwriteSessionMemory: cfg.OverwriteSessionMemory, ReportDir: cfg.ReportDir}, err
+	}
 
 	traceStore := trace.NewMemoryStoreWithEntries(existingTrace)
 	// Runtime 把 provider、registry、policy 和 trace 串起来：
@@ -88,7 +101,7 @@ func executeDiagnosisRun(ctx context.Context, opts diagnoseOptions, runID string
 		Model:            setup.model,
 		TargetContext:    targetContextForDiagnose(cfg),
 		ToolArgOverrides: toolArgOverridesForDiagnose(cfg),
-		Memories:         memoryHintsForDiagnose(cfg.RunDir, runID),
+		Memories:         memories,
 	}, setup.provider, setup.registry, policy.NewValidator(policy.Config{
 		ToolAllowlist: cfg.ToolAllowlist,
 		ToolSchemas:   toolSchemasFromRegistry(setup.registry),
@@ -99,6 +112,7 @@ func executeDiagnosisRun(ctx context.Context, opts diagnoseOptions, runID string
 	if err != nil {
 		state := runstore.State{
 			RunID:     runID,
+			SessionID: cfg.SessionID,
 			Goal:      cfg.Goal,
 			Status:    runstore.StatusFailed,
 			Plan:      runtime.Plan(),
@@ -107,7 +121,7 @@ func executeDiagnosisRun(ctx context.Context, opts diagnoseOptions, runID string
 			CreatedAt: createdAt,
 			UpdatedAt: time.Now().UTC(),
 		}
-		return diagnoseResult{State: state, RunDir: cfg.RunDir, ReportDir: cfg.ReportDir}, err
+		return diagnoseResult{State: state, RunDir: cfg.RunDir, SessionDir: cfg.SessionDir, Environment: cfg.Environment, OverwriteSessionMemory: cfg.OverwriteSessionMemory, ReportDir: cfg.ReportDir}, err
 	}
 
 	markdown := report.Markdown(report.Input{
@@ -118,6 +132,7 @@ func executeDiagnosisRun(ctx context.Context, opts diagnoseOptions, runID string
 	})
 	state := runstore.State{
 		RunID:     runID,
+		SessionID: cfg.SessionID,
 		Goal:      cfg.Goal,
 		Status:    runstore.StatusCompleted,
 		Plan:      runtime.Plan(),
@@ -126,23 +141,5 @@ func executeDiagnosisRun(ctx context.Context, opts diagnoseOptions, runID string
 		CreatedAt: createdAt,
 		UpdatedAt: time.Now().UTC(),
 	}
-	return diagnoseResult{Markdown: markdown, State: state, RunDir: cfg.RunDir, ReportDir: cfg.ReportDir}, nil
-}
-
-// memoryHintsForDiagnose 把历史完成运行压缩成模型可见线索，且不携带旧 evidence。
-// 参数: runDir 为状态目录，currentRunID 为当前运行；返回: 最近运行的脱敏摘要。
-func memoryHintsForDiagnose(runDir string, currentRunID string) []schema.Memory {
-	states := runstore.NewStore(runDir).RecentCompleted(3)
-	memories := make([]schema.Memory, 0, len(states))
-	for _, state := range states {
-		if state.RunID == currentRunID {
-			continue
-		}
-		memories = append(memories, schema.Memory{
-			Subject:     tools.RedactSensitive(state.Goal),
-			Content:     tools.RedactSensitive(state.Diagnosis.Summary),
-			SourceRunID: state.RunID,
-		})
-	}
-	return memories
+	return diagnoseResult{Markdown: markdown, State: state, RunDir: cfg.RunDir, SessionDir: cfg.SessionDir, Environment: cfg.Environment, OverwriteSessionMemory: cfg.OverwriteSessionMemory, ReportDir: cfg.ReportDir}, nil
 }

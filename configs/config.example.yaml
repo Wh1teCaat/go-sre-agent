@@ -42,9 +42,13 @@ policy:
 
 paths:
   run_dir: .runs
+  # 每个会话使用独立子目录：<session_dir>/<session_id>/。
+  session_dir: .sessions
   report_dir: reports
 
 targets:
+  # 会话隔离标签；同一 session 不能跨环境继续。
+  environment: local
   backend_base_url: http://localhost:8080
   # http_check 允许 POST 复现的诊断地址；GET/HEAD 不受此限制。
   allowed_post_urls:

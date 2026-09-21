@@ -167,29 +167,34 @@ func resolveDiagnosisConfig(opts diagnoseOptions) (diagnoseOptions, error) {
 		}
 	}
 	resolved := diagnoseOptions{
-		Goal:              opts.Goal,
-		BackendBaseURL:    cfg.Targets.BackendBaseURL,
-		AllowedPostURLs:   allowedPostURLs,
-		LogFile:           cfg.Targets.LogFile,
-		AllowedLogDirs:    allowedLogDirs,
-		AllowedHosts:      cfg.Policy.AllowedHosts,
-		AllowedContainers: cfg.Policy.AllowedContainers,
-		RedisKeyPrefixes:  cfg.Policy.RedisKeyPrefixes,
-		PostgresDSN:       cfg.Targets.PostgresDSN,
-		RedisAddr:         cfg.Targets.RedisAddr,
-		KafkaAddr:         cfg.Targets.KafkaAddr,
-		KafkaTopic:        cfg.Targets.KafkaTopic,
-		SmokeCommand:      cfg.Targets.SmokeCommand,
-		SmokeDir:          cfg.Targets.SmokeDir,
-		SmokeTimeout:      cfg.Targets.SmokeTimeout,
-		WebSocketURL:      cfg.Targets.WebSocketURL,
-		MaxSteps:          cfg.Agent.MaxSteps,
-		LLMTimeout:        cfg.Agent.LLMTimeout,
-		ToolTimeout:       cfg.Agent.ToolTimeout,
-		SkillPath:         cfg.Agent.SkillPath,
-		ToolAllowlist:     cfg.Policy.ToolAllowlist,
-		RunDir:            cfg.Paths.RunDir,
-		ReportDir:         cfg.Paths.ReportDir,
+		Goal:                   opts.Goal,
+		BackendBaseURL:         cfg.Targets.BackendBaseURL,
+		AllowedPostURLs:        allowedPostURLs,
+		LogFile:                cfg.Targets.LogFile,
+		AllowedLogDirs:         allowedLogDirs,
+		AllowedHosts:           cfg.Policy.AllowedHosts,
+		AllowedContainers:      cfg.Policy.AllowedContainers,
+		RedisKeyPrefixes:       cfg.Policy.RedisKeyPrefixes,
+		PostgresDSN:            cfg.Targets.PostgresDSN,
+		RedisAddr:              cfg.Targets.RedisAddr,
+		KafkaAddr:              cfg.Targets.KafkaAddr,
+		KafkaTopic:             cfg.Targets.KafkaTopic,
+		SmokeCommand:           cfg.Targets.SmokeCommand,
+		SmokeDir:               cfg.Targets.SmokeDir,
+		SmokeTimeout:           cfg.Targets.SmokeTimeout,
+		WebSocketURL:           cfg.Targets.WebSocketURL,
+		MaxSteps:               cfg.Agent.MaxSteps,
+		LLMTimeout:             cfg.Agent.LLMTimeout,
+		ToolTimeout:            cfg.Agent.ToolTimeout,
+		SkillPath:              cfg.Agent.SkillPath,
+		ToolAllowlist:          cfg.Policy.ToolAllowlist,
+		RunDir:                 cfg.Paths.RunDir,
+		SessionID:              opts.SessionID,
+		SessionDir:             cfg.Paths.SessionDir,
+		Environment:            cfg.Targets.Environment,
+		NewSession:             opts.NewSession,
+		OverwriteSessionMemory: opts.OverwriteSessionMemory,
+		ReportDir:              cfg.Paths.ReportDir,
 	}
 	if opts.MaxSteps > 0 {
 		resolved.MaxSteps = opts.MaxSteps
@@ -202,6 +207,12 @@ func resolveDiagnosisConfig(opts diagnoseOptions) (diagnoseOptions, error) {
 	}
 	if opts.RunDir != "" {
 		resolved.RunDir = opts.RunDir
+	}
+	if opts.SessionDir != "" {
+		resolved.SessionDir = opts.SessionDir
+	}
+	if opts.Environment != "" {
+		resolved.Environment = opts.Environment
 	}
 	return resolved, nil
 }
@@ -217,6 +228,19 @@ func resolveRunDir(configPath, runDir string) (string, error) {
 		return "", err
 	}
 	return cfg.Paths.RunDir, nil
+}
+
+// resolveSessionDir resolves the CLI or configured root for generated session
+// state. It mirrors run-dir resolution while keeping both data classes apart.
+func resolveSessionDir(configPath, sessionDir string) (string, error) {
+	if strings.TrimSpace(sessionDir) != "" {
+		return sessionDir, nil
+	}
+	cfg, err := loadAppConfig(configPath)
+	if err != nil {
+		return "", err
+	}
+	return cfg.Paths.SessionDir, nil
 }
 
 // loadAppConfig 加载显式或默认路径下的 YAML 配置。

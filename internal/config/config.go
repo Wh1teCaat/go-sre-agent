@@ -32,12 +32,16 @@ type PolicyConfig struct {
 }
 
 type PathsConfig struct {
-	RunDir    string
-	ReportDir string
+	RunDir     string
+	SessionDir string
+	ReportDir  string
 }
 
 type TargetConfig struct {
 	BackendBaseURL string
+	// Environment is a non-sensitive label such as local, staging, or prod.
+	// It scopes session memory and prevents accidental cross-environment reuse.
+	Environment string
 	// AllowedPostURLs 是 http_check 允许 POST 复现的诊断地址；GET/HEAD 不受限制。
 	// 未配置时回退为 backend_base_url 派生的登录地址（见 cmd 层 legacyLoginURL）。
 	AllowedPostURLs []string
@@ -69,11 +73,13 @@ type rawConfig struct {
 		RedisKeyPrefixes  []string `yaml:"redis_key_prefixes"`
 	} `yaml:"policy"`
 	Paths struct {
-		RunDir    string `yaml:"run_dir"`
-		ReportDir string `yaml:"report_dir"`
+		RunDir     string `yaml:"run_dir"`
+		SessionDir string `yaml:"session_dir"`
+		ReportDir  string `yaml:"report_dir"`
 	} `yaml:"paths"`
 	Targets struct {
 		BackendBaseURL  string   `yaml:"backend_base_url"`
+		Environment     string   `yaml:"environment"`
 		AllowedPostURLs []string `yaml:"allowed_post_urls"`
 		PostgresDSN     string   `yaml:"postgres_dsn"`
 		RedisAddr       string   `yaml:"redis_addr"`
@@ -133,10 +139,12 @@ func Default() Config {
 			},
 		},
 		Paths: PathsConfig{
-			RunDir: ".runs",
+			RunDir:     ".runs",
+			SessionDir: ".sessions",
 		},
 		Targets: TargetConfig{
 			BackendBaseURL: "http://localhost:8080",
+			Environment:    "local",
 			PostgresDSN:    "postgres://postgres:postgres@localhost:5432/chat_proj?sslmode=disable",
 			RedisAddr:      "localhost:6379",
 			KafkaAddr:      "localhost:29092",
@@ -205,11 +213,17 @@ func Load(path string) (Config, error) {
 	if raw.Paths.RunDir != "" {
 		cfg.Paths.RunDir = raw.Paths.RunDir
 	}
+	if raw.Paths.SessionDir != "" {
+		cfg.Paths.SessionDir = raw.Paths.SessionDir
+	}
 	if raw.Paths.ReportDir != "" {
 		cfg.Paths.ReportDir = raw.Paths.ReportDir
 	}
 	if raw.Targets.BackendBaseURL != "" {
 		cfg.Targets.BackendBaseURL = raw.Targets.BackendBaseURL
+	}
+	if raw.Targets.Environment != "" {
+		cfg.Targets.Environment = raw.Targets.Environment
 	}
 	if len(raw.Targets.AllowedPostURLs) > 0 {
 		cfg.Targets.AllowedPostURLs = raw.Targets.AllowedPostURLs

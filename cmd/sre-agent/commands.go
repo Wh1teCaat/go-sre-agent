@@ -20,6 +20,10 @@ func runDiagnoseCommand(args []string) {
 	llmTimeout := fs.Duration("llm-timeout", 0, "LLM request timeout")
 	toolTimeout := fs.Duration("tool-timeout", 0, "tool execution timeout")
 	runDir := fs.String("run-dir", "", "override run state directory")
+	sessionID := fs.String("session-id", "", "continue an existing diagnostic session")
+	sessionDir := fs.String("session-dir", "", "override session state directory")
+	environment := fs.String("environment", "", "session environment label")
+	overwriteSessionMemory := fs.Bool("overwrite-session-memory", false, "allow overwrite of manually changed generated session memory")
 	out := fs.String("out", "", "override markdown report file")
 	if err := fs.Parse(args); err != nil {
 		fmt.Fprintln(os.Stderr, err)
@@ -33,18 +37,25 @@ func runDiagnoseCommand(args []string) {
 
 	// CLI 层只做参数收集和退出码处理。
 	result, err := startDiagnosisRun(context.Background(), diagnoseOptions{
-		Goal:        *goal,
-		ConfigPath:  *configPath,
-		MaxSteps:    *maxSteps,
-		LLMTimeout:  *llmTimeout,
-		ToolTimeout: *toolTimeout,
-		RunDir:      *runDir,
+		Goal:                   *goal,
+		ConfigPath:             *configPath,
+		MaxSteps:               *maxSteps,
+		LLMTimeout:             *llmTimeout,
+		ToolTimeout:            *toolTimeout,
+		RunDir:                 *runDir,
+		SessionID:              *sessionID,
+		SessionDir:             *sessionDir,
+		Environment:            *environment,
+		OverwriteSessionMemory: *overwriteSessionMemory,
 	}, *mockScenario)
 	if err := saveDiagnosisResult(result, err); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
 	fmt.Fprintf(os.Stderr, "run_id: %s\n", result.State.RunID)
+	if result.State.SessionID != "" {
+		fmt.Fprintf(os.Stderr, "session_id: %s\n", result.State.SessionID)
+	}
 
 	markdown, err := markdownOutput(*out, result)
 	if err != nil {
@@ -65,6 +76,9 @@ func runResumeCommand(args []string) {
 	llmTimeout := fs.Duration("llm-timeout", 0, "LLM request timeout")
 	toolTimeout := fs.Duration("tool-timeout", 0, "tool execution timeout")
 	runDir := fs.String("run-dir", "", "override run state directory")
+	sessionDir := fs.String("session-dir", "", "override session state directory")
+	environment := fs.String("environment", "", "session environment label")
+	overwriteSessionMemory := fs.Bool("overwrite-session-memory", false, "allow overwrite of manually changed generated session memory")
 	out := fs.String("out", "", "override markdown report file")
 	if err := fs.Parse(args); err != nil {
 		fmt.Fprintln(os.Stderr, err)
@@ -72,18 +86,24 @@ func runResumeCommand(args []string) {
 	}
 
 	result, err := resumeDiagnosisRun(context.Background(), resumeOptions{
-		RunID:       *runID,
-		RunDir:      *runDir,
-		ConfigPath:  *configPath,
-		MaxSteps:    *maxSteps,
-		LLMTimeout:  *llmTimeout,
-		ToolTimeout: *toolTimeout,
+		RunID:                  *runID,
+		RunDir:                 *runDir,
+		SessionDir:             *sessionDir,
+		Environment:            *environment,
+		OverwriteSessionMemory: *overwriteSessionMemory,
+		ConfigPath:             *configPath,
+		MaxSteps:               *maxSteps,
+		LLMTimeout:             *llmTimeout,
+		ToolTimeout:            *toolTimeout,
 	}, *mockScenario)
 	if err := saveDiagnosisResult(result, err); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
 	fmt.Fprintf(os.Stderr, "run_id: %s\n", result.State.RunID)
+	if result.State.SessionID != "" {
+		fmt.Fprintf(os.Stderr, "session_id: %s\n", result.State.SessionID)
+	}
 	markdown, err := markdownOutput(*out, result)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)

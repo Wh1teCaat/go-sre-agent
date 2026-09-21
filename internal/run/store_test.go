@@ -109,25 +109,3 @@ func TestNewRunIDUsesRandomSuffix(t *testing.T) {
 		t.Fatalf("unsafe run ids: %q %q", first, second)
 	}
 }
-
-func TestStoreReturnsRecentCompletedRunsForMemory(t *testing.T) {
-	dir := t.TempDir()
-	store := NewStore(dir)
-	for _, state := range []State{
-		{RunID: "old", Status: StatusCompleted, Goal: "旧诊断", Diagnosis: &schema.Diagnosis{Summary: "旧结论"}, UpdatedAt: time.Unix(10, 0)},
-		{RunID: "new", Status: StatusCompleted, Goal: "新诊断", Diagnosis: &schema.Diagnosis{Summary: "新结论"}, UpdatedAt: time.Unix(20, 0)},
-		{RunID: "failed", Status: StatusFailed, Goal: "失败诊断", UpdatedAt: time.Unix(30, 0)},
-	} {
-		if err := store.Save(state); err != nil {
-			t.Fatalf("save state: %v", err)
-		}
-	}
-	if err := os.WriteFile(filepath.Join(dir, "broken.json"), []byte("{"), 0o600); err != nil {
-		t.Fatalf("write broken state: %v", err)
-	}
-
-	states := store.RecentCompleted(1)
-	if len(states) != 1 || states[0].RunID != "new" {
-		t.Fatalf("recent states = %#v, want newest completed run", states)
-	}
-}

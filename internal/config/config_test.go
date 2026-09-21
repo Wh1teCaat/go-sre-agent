@@ -27,9 +27,11 @@ policy:
     - chat-backend
 paths:
   run_dir: /tmp/sre-agent-runs
+  session_dir: /tmp/sre-agent-sessions
   report_dir: /tmp/sre-agent-reports
 targets:
   backend_base_url: http://localhost:9000
+  environment: staging
   postgres_dsn: postgres://app:secret@localhost:5432/chat_proj?sslmode=disable
   redis_addr: localhost:6380
   websocket_url: ws://localhost:9000/ws
@@ -70,8 +72,14 @@ targets:
 	if cfg.Paths.RunDir != "/tmp/sre-agent-runs" {
 		t.Fatalf("run dir = %q, want configured value", cfg.Paths.RunDir)
 	}
+	if cfg.Paths.SessionDir != "/tmp/sre-agent-sessions" {
+		t.Fatalf("session dir = %q, want configured value", cfg.Paths.SessionDir)
+	}
 	if cfg.Paths.ReportDir != "/tmp/sre-agent-reports" {
 		t.Fatalf("report dir = %q, want configured value", cfg.Paths.ReportDir)
+	}
+	if cfg.Targets.Environment != "staging" {
+		t.Fatalf("environment = %q, want staging", cfg.Targets.Environment)
 	}
 }
 
@@ -79,6 +87,9 @@ func TestDefaultAllowsLocalDiagnosticHosts(t *testing.T) {
 	cfg := Default()
 	if cfg.Agent.SkillPath != "skills/sre-diagnosis/SKILL.md" {
 		t.Fatalf("default skill path = %q", cfg.Agent.SkillPath)
+	}
+	if cfg.Paths.SessionDir != ".sessions" || cfg.Targets.Environment != "local" {
+		t.Fatalf("default session settings = %#v / %q", cfg.Paths, cfg.Targets.Environment)
 	}
 
 	for _, want := range []string{"localhost", "127.0.0.1", "::1"} {

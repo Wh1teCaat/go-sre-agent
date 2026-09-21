@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -26,7 +25,10 @@ const (
 // State 是一次诊断运行的可持久化快照。
 // 它保存 trace 和最终 diagnosis，供后续 status/report/resume 使用。
 type State struct {
-	RunID     string            `json:"run_id"`
+	RunID string `json:"run_id"`
+	// SessionID optionally links this run to a phase-1 session. Its omission
+	// preserves compatibility with runs written before session memory existed.
+	SessionID string            `json:"session_id,omitempty"`
 	Goal      string            `json:"goal"`
 	Status    Status            `json:"status"`
 	Plan      schema.Plan       `json:"plan,omitempty"`
@@ -113,42 +115,6 @@ func (s *Store) Load(runID string) (State, error) {
 		return State{}, fmt.Errorf("decode run state: %w", err)
 	}
 	return state, nil
-}
-
-// RecentCompleted 返回最近完成的诊断，用作后续运行的历史线索。
-// 记忆是可选能力，单个损坏文件不会阻塞新的诊断。
-func (s *Store) RecentCompleted(limit int) []State {
-	if limit <= 0 {
-		return nil
-	}
-	entries, err := os.ReadDir(s.dir)
-	if err != nil {
-		return nil
-	}
-
-	states := make([]State, 0, len(entries))
-	// ponytail: 运行量较小时直接扫描 JSON；文件很多时再换 SQLite 查询。
-	for _, entry := range entries {
-		if entry.IsDir() || filepath.Ext(entry.Name()) != ".json" {
-			continue
-		}
-		data, err := os.ReadFile(filepath.Join(s.dir, entry.Name()))
-		if err != nil {
-			continue
-		}
-		var state State
-		if json.Unmarshal(data, &state) != nil || state.Status != StatusCompleted || state.Diagnosis == nil || strings.TrimSpace(state.Diagnosis.Summary) == "" {
-			continue
-		}
-		states = append(states, state)
-	}
-	sort.Slice(states, func(i, j int) bool {
-		return states[i].UpdatedAt.After(states[j].UpdatedAt)
-	})
-	if len(states) > limit {
-		states = states[:limit]
-	}
-	return states
 }
 
 func (s *Store) path(runID string) (string, error) {
