@@ -2,6 +2,8 @@ agent:
   max_steps: 12
   llm_timeout: 30s
   tool_timeout: 5s
+  # 单次 diagnose/resume 的总执行预算；独立于每次 LLM/工具调用超时。
+  task_timeout: 5m
   skill_path: skills/sre-diagnosis/SKILL.md
 
 policy:

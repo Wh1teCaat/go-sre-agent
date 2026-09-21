@@ -19,6 +19,7 @@ type AgentConfig struct {
 	MaxSteps    int
 	LLMTimeout  time.Duration
 	ToolTimeout time.Duration
+	TaskTimeout time.Duration
 	SkillPath   string
 }
 
@@ -39,8 +40,8 @@ type PathsConfig struct {
 
 type TargetConfig struct {
 	BackendBaseURL string
-	// Environment is a non-sensitive label such as local, staging, or prod.
-	// It scopes session memory and prevents accidental cross-environment reuse.
+	// Environment 是 local、staging、prod 等非敏感标签；它限定会话记忆范围，
+	// 防止意外跨环境复用。
 	Environment string
 	// AllowedPostURLs 是 http_check 允许 POST 复现的诊断地址；GET/HEAD 不受限制。
 	// 未配置时回退为 backend_base_url 派生的登录地址（见 cmd 层 legacyLoginURL）。
@@ -63,6 +64,7 @@ type rawConfig struct {
 		MaxSteps    int    `yaml:"max_steps"`
 		LLMTimeout  string `yaml:"llm_timeout"`
 		ToolTimeout string `yaml:"tool_timeout"`
+		TaskTimeout string `yaml:"task_timeout"`
 		SkillPath   string `yaml:"skill_path"`
 	} `yaml:"agent"`
 	Policy struct {
@@ -101,6 +103,7 @@ func Default() Config {
 			MaxSteps:    12,
 			LLMTimeout:  30 * time.Second,
 			ToolTimeout: 5 * time.Second,
+			TaskTimeout: 5 * time.Minute,
 			SkillPath:   "skills/sre-diagnosis/SKILL.md",
 		},
 		Policy: PolicyConfig{
@@ -191,6 +194,16 @@ func Load(path string) (Config, error) {
 			return Config{}, fmt.Errorf("agent.tool_timeout must be positive")
 		}
 		cfg.Agent.ToolTimeout = duration
+	}
+	if raw.Agent.TaskTimeout != "" {
+		duration, err := time.ParseDuration(raw.Agent.TaskTimeout)
+		if err != nil {
+			return Config{}, fmt.Errorf("parse agent.task_timeout: %w", err)
+		}
+		if duration <= 0 {
+			return Config{}, fmt.Errorf("agent.task_timeout must be positive")
+		}
+		cfg.Agent.TaskTimeout = duration
 	}
 	if raw.Agent.SkillPath != "" {
 		cfg.Agent.SkillPath = raw.Agent.SkillPath

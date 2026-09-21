@@ -114,7 +114,7 @@ func readRedisSimpleLine(reader *bufio.Reader) (string, error) {
 	}
 	line = strings.TrimSuffix(strings.TrimSuffix(line, "\n"), "\r")
 	if strings.HasPrefix(line, "-") {
-		// RESP error 以 - 开头，保留服务端错误文本给上层 observation。
+		// RESP 错误以 - 开头，保留服务端错误文本给上层 observation。
 		return "", fmt.Errorf("%s", strings.TrimPrefix(line, "-"))
 	}
 	if strings.HasPrefix(line, "+") {

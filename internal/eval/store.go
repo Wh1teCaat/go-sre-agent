@@ -14,18 +14,16 @@ import (
 	"github.com/y2/go-sre-agent/internal/tools"
 )
 
-// DefaultResultsDir is the conventional location for generated evaluation
-// records. It is intended to be ignored by Git while scenario definitions and
-// sanitized fixtures remain versioned separately.
+// DefaultResultsDir 是生成评测记录的约定目录。它应被 Git 忽略，场景定义和脱敏
+// 样本则分别纳入版本控制。
 const DefaultResultsDir = "evals/results"
 
-// Store persists evaluation Result values as one JSON document per result.
+// Store 将评测 Result 按每个结果一个 JSON 文档持久化。
 type Store struct {
 	dir string
 }
 
-// NewStore creates an evaluation result store. An empty directory uses the
-// conventional evals/results location.
+// NewStore 创建评测结果存储；空目录使用约定的 evals/results 位置。
 func NewStore(dir string) *Store {
 	if strings.TrimSpace(dir) == "" {
 		dir = DefaultResultsDir
@@ -33,7 +31,7 @@ func NewStore(dir string) *Store {
 	return &Store{dir: dir}
 }
 
-// NewResultID creates a filesystem-safe unique evaluation identifier.
+// NewResultID 创建文件系统安全的唯一评测标识。
 func NewResultID(now time.Time) string {
 	if now.IsZero() {
 		now = time.Now()
@@ -42,8 +40,8 @@ func NewResultID(now time.Time) string {
 	return fmt.Sprintf("eval_%s_%09d_%s", now.Format("20060102_150405"), now.Nanosecond(), randomResultIDSuffix())
 }
 
-// randomResultIDSuffix uses cryptographic randomness when available and falls
-// back to a timestamp representation solely to preserve identifier uniqueness.
+// randomResultIDSuffix 优先使用密码学随机数；不可用时仅为保持标识唯一性而回退到
+// 时间戳表示。
 func randomResultIDSuffix() string {
 	var bytes [8]byte
 	if _, err := rand.Read(bytes[:]); err == nil {
@@ -52,8 +50,7 @@ func randomResultIDSuffix() string {
 	return strconv.FormatInt(time.Now().UnixNano(), 36)
 }
 
-// Save atomically writes a redacted JSON result with 0600 permissions and
-// returns its path. It never writes outside the configured result directory.
+// Save 原子写入权限为 0600 的脱敏 JSON 结果并返回其路径；它绝不写出配置的结果目录。
 func (s *Store) Save(result Result) (string, error) {
 	if s == nil {
 		return "", fmt.Errorf("evaluation result store is nil")
@@ -100,7 +97,7 @@ func (s *Store) Save(result Result) (string, error) {
 	return path, nil
 }
 
-// Load reads a previously persisted evaluation result by its safe identifier.
+// Load 按安全标识读取此前持久化的评测结果。
 func (s *Store) Load(resultID string) (Result, error) {
 	if s == nil {
 		return Result{}, fmt.Errorf("evaluation result store is nil")
@@ -120,7 +117,7 @@ func (s *Store) Load(resultID string) (Result, error) {
 	return result, nil
 }
 
-// path validates a result ID before deriving its path below the store root.
+// path 在存储根目录下推导路径前校验结果 ID。
 func (s *Store) path(resultID string) (string, error) {
 	if !safeResultID(resultID) {
 		return "", fmt.Errorf("unsafe evaluation result id %q", resultID)
@@ -128,7 +125,7 @@ func (s *Store) path(resultID string) (string, error) {
 	return filepath.Join(s.dir, resultID+".json"), nil
 }
 
-// safeResultID accepts only flat filesystem-safe identifiers.
+// safeResultID 只接受扁平且文件系统安全的标识。
 func safeResultID(resultID string) bool {
 	if strings.TrimSpace(resultID) == "" || resultID != filepath.Base(resultID) {
 		return false
@@ -142,8 +139,7 @@ func safeResultID(resultID string) bool {
 	return true
 }
 
-// validateResult rejects result states that could misrepresent a mock or
-// unexecuted real-model evaluation before they are persisted.
+// validateResult 在持久化前拒绝可能错误表达 mock 或未执行真实模型评测的结果状态。
 func validateResult(result Result) error {
 	if !safeResultID(result.ID) {
 		return fmt.Errorf("unsafe evaluation result id %q", result.ID)
@@ -170,8 +166,7 @@ func validateResult(result Result) error {
 	return nil
 }
 
-// redactResult copies a result while applying the repository's sensitive-data
-// redaction policy to every persisted human-readable field.
+// redactResult 复制结果，并对每个持久化的可读字段应用仓库敏感数据脱敏策略。
 func redactResult(input Result) Result {
 	output := input
 	output.ScenarioName = tools.RedactSensitive(input.ScenarioName)

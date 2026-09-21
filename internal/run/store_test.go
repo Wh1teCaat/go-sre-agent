@@ -109,3 +109,96 @@ func TestNewRunIDUsesRandomSuffix(t *testing.T) {
 		t.Fatalf("unsafe run ids: %q %q", first, second)
 	}
 }
+
+func TestStorePreservesCheckpointedCallsAndLegacyOmission(t *testing.T) {
+	dir := t.TempDir()
+	finishedAt := time.Unix(11, 0).UTC()
+	taskDeadline := time.Unix(20, 0).UTC()
+	state := State{
+		RunID:  "run_checkpointed",
+		Goal:   "check durable call state",
+		Status: StatusCancelled,
+		Calls: []Call{{
+			CallID:     "call_test",
+			Kind:       CallKindTool,
+			Step:       1,
+			ToolName:   "smoke_run",
+			SideEffect: true,
+			Status:     CallStatusUnknown,
+			ErrorClass: ErrorClassUnknown,
+			Error:      "execution outcome is unknown",
+			StartedAt:  time.Unix(10, 0).UTC(),
+			FinishedAt: &finishedAt,
+		}},
+		TaskDeadline: &taskDeadline,
+		CreatedAt:    time.Unix(1, 0).UTC(),
+		UpdatedAt:    time.Unix(2, 0).UTC(),
+	}
+	if err := NewStore(dir).Save(state); err != nil {
+		t.Fatalf("save checkpointed state: %v", err)
+	}
+	loaded, err := NewStore(dir).Load(state.RunID)
+	if err != nil {
+		t.Fatalf("load checkpointed state: %v", err)
+	}
+	if len(loaded.Calls) != 1 || loaded.Calls[0].CallID != "call_test" || !HasUnknownSideEffect(loaded.Calls) || loaded.TaskDeadline == nil || !loaded.TaskDeadline.Equal(*state.TaskDeadline) {
+		t.Fatalf("loaded checkpoint fields = %#v", loaded)
+	}
+
+	legacy := State{RunID: "run_legacy", Goal: "old state", Status: StatusFailed, CreatedAt: time.Unix(1, 0).UTC()}
+	if err := NewStore(dir).Save(legacy); err != nil {
+		t.Fatalf("save legacy-shaped state: %v", err)
+	}
+	loadedLegacy, err := NewStore(dir).Load(legacy.RunID)
+	if err != nil {
+		t.Fatalf("load legacy-shaped state: %v", err)
+	}
+	if len(loadedLegacy.Calls) != 0 || loadedLegacy.TaskDeadline != nil {
+		t.Fatalf("legacy checkpoint fields = %#v, want omitted", loadedLegacy)
+	}
+	legacyJSON, err := os.ReadFile(filepath.Join(dir, legacy.RunID+".json"))
+	if err != nil {
+		t.Fatalf("read legacy-shaped JSON: %v", err)
+	}
+	if strings.Contains(string(legacyJSON), `"calls"`) || strings.Contains(string(legacyJSON), `"task_deadline"`) {
+		t.Fatalf("legacy-shaped JSON unexpectedly has phase-2 fields:\n%s", legacyJSON)
+	}
+}
+
+func TestMarkInterruptedCallsUnknownPreservesKnownResults(t *testing.T) {
+	calls := []Call{
+		{CallID: "call_done", Kind: CallKindTool, Status: CallStatusSucceeded},
+		{CallID: "call_running", Kind: CallKindTool, SideEffect: true, Status: CallStatusRunning},
+	}
+	changed := MarkInterruptedCallsUnknown(calls, time.Unix(10, 0).UTC())
+	if !changed || calls[0].Status != CallStatusSucceeded || calls[1].Status != CallStatusUnknown || calls[1].ErrorClass != ErrorClassUnknown || calls[1].FinishedAt == nil || calls[1].FinishedAt.IsZero() {
+		t.Fatalf("recovered calls = %#v", calls)
+	}
+}
+
+func TestStoreOmitsFinishedAtForInFlightCall(t *testing.T) {
+	dir := t.TempDir()
+	state := State{
+		RunID:  "run_in_flight",
+		Goal:   "checkpoint before call",
+		Status: StatusRunning,
+		Calls: []Call{{
+			CallID:    "call_running",
+			Kind:      CallKindTool,
+			Status:    CallStatusRunning,
+			StartedAt: time.Unix(10, 0).UTC(),
+		}},
+		CreatedAt: time.Unix(1, 0).UTC(),
+		UpdatedAt: time.Unix(2, 0).UTC(),
+	}
+	if err := NewStore(dir).Save(state); err != nil {
+		t.Fatalf("save in-flight state: %v", err)
+	}
+	data, err := os.ReadFile(filepath.Join(dir, state.RunID+".json"))
+	if err != nil {
+		t.Fatalf("read in-flight state: %v", err)
+	}
+	if strings.Contains(string(data), `"finished_at"`) || strings.Contains(string(data), "0001-01-01") {
+		t.Fatalf("in-flight JSON should omit unfinished timestamp:\n%s", data)
+	}
+}

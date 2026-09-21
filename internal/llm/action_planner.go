@@ -96,8 +96,8 @@ func (p *ActionPlanner) Next(ctx context.Context, request Request) (Decision, er
 	return Decision{Action: &result.Action}, nil
 }
 
-// buildActionChatRequest 故意保持 provider-neutral。厂商特有字段由后续选中的
-// ChatClient 实现负责补齐。
+// buildActionChatRequest 故意保持与 provider 无关；厂商特有字段由后续选中的
+// ChatClient 实现补齐。
 func buildActionChatRequest(config ActionPlannerConfig, request Request) (ChatRequest, error) {
 	// request 包含 goal、可用工具 schema、历史 observation。缩进后的 JSON
 	// 更利于人工排查 prompt，也让测试中的断言更直观。
@@ -124,7 +124,7 @@ func buildActionChatRequest(config ActionPlannerConfig, request Request) (ChatRe
 }
 
 // extractActionJSON 对模型输出做轻量容错：从第一个 JSON 对象开始解析。
-// Markdown fence 等前后缀文本由此被跳过（json.Decoder 只读一个值，忽略尾部内容）。
+// Markdown 代码围栏等前后缀文本由此被跳过（json.Decoder 只读一个值，忽略尾部内容）。
 // 真正的结构和字段合法性仍交给 json decoder 与 policy validator 处理。
 func extractActionJSON(content string) string {
 	text := strings.TrimSpace(content)

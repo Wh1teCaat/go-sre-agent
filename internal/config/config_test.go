@@ -14,6 +14,7 @@ agent:
   max_steps: 12
   llm_timeout: 25s
   tool_timeout: 7s
+  task_timeout: 3m
   skill_path: custom/SKILL.md
 policy:
   tool_allowlist:
@@ -54,6 +55,9 @@ targets:
 	if cfg.Agent.LLMTimeout != 25*time.Second {
 		t.Fatalf("llm timeout = %s, want 25s", cfg.Agent.LLMTimeout)
 	}
+	if cfg.Agent.TaskTimeout != 3*time.Minute {
+		t.Fatalf("task timeout = %s, want 3m", cfg.Agent.TaskTimeout)
+	}
 	if cfg.Agent.SkillPath != "custom/SKILL.md" {
 		t.Fatalf("skill path = %q, want custom/SKILL.md", cfg.Agent.SkillPath)
 	}
@@ -88,6 +92,9 @@ func TestDefaultAllowsLocalDiagnosticHosts(t *testing.T) {
 	if cfg.Agent.SkillPath != "skills/sre-diagnosis/SKILL.md" {
 		t.Fatalf("default skill path = %q", cfg.Agent.SkillPath)
 	}
+	if cfg.Agent.TaskTimeout != 5*time.Minute {
+		t.Fatalf("default task timeout = %s, want 5m", cfg.Agent.TaskTimeout)
+	}
 	if cfg.Paths.SessionDir != ".sessions" || cfg.Targets.Environment != "local" {
 		t.Fatalf("default session settings = %#v / %q", cfg.Paths, cfg.Targets.Environment)
 	}
@@ -118,6 +125,7 @@ func TestLoadRejectsNonPositiveDuration(t *testing.T) {
 	for _, config := range []string{
 		"agent:\n  llm_timeout: 0s\n",
 		"agent:\n  tool_timeout: -1s\n",
+		"agent:\n  task_timeout: 0s\n",
 	} {
 		path := filepath.Join(t.TempDir(), "config.yaml")
 		if err := os.WriteFile(path, []byte(config), 0o644); err != nil {

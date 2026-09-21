@@ -11,7 +11,7 @@ type Plan struct {
 type PlanItem struct {
 	ID     string `json:"id"`
 	Goal   string `json:"goal"`
-	Status string `json:"status,omitempty"` // pending | done | blocked | insufficient
+	Status string `json:"status,omitempty"` // 可选值：pending、done、blocked、insufficient
 	Reason string `json:"reason,omitempty"`
 }
 
@@ -19,7 +19,7 @@ type PlanItem struct {
 // Evidence 仍必须引用真实 trace，不能只靠模型自述。
 type CoverageItem struct {
 	PlanItemID string     `json:"plan_item_id"`
-	Status     string     `json:"status"` // done | blocked | insufficient
+	Status     string     `json:"status"` // 可选值：done、blocked、insufficient
 	Evidence   []Evidence `json:"evidence,omitempty"`
 	Note       string     `json:"note,omitempty"`
 }

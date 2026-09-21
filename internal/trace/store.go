@@ -1,7 +1,7 @@
 package trace
 
 // MemoryStore 是单次 CLI 运行内的 trace 存储。
-// ponytail: 单次 CLI 只需内存 trace；出现第二种存储实现时再引入接口。
+// 单次 CLI 只需内存 trace；出现第二种存储实现时再引入接口。
 type MemoryStore struct {
 	entries []Entry
 }

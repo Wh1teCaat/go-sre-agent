@@ -27,6 +27,7 @@ type diagnoseOptions struct {
 	MaxSteps               int
 	LLMTimeout             time.Duration
 	ToolTimeout            time.Duration
+	TaskTimeout            time.Duration
 	SkillPath              string
 	ToolAllowlist          []string
 	RunDir                 string
@@ -54,6 +55,8 @@ type resumeOptions struct {
 	MaxSteps               int
 	LLMTimeout             time.Duration
 	ToolTimeout            time.Duration
+	TaskTimeout            time.Duration
+	ResumeRunning          bool
 }
 
 type diagnoseResult struct {

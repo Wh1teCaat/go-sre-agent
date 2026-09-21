@@ -22,6 +22,9 @@ type ToolSpec struct {
 	Name        string     `json:"name"`
 	Description string     `json:"description"`
 	Schema      ToolSchema `json:"schema"`
+	// SideEffect 标记可能改变目标状态的调用；恢复的 run 在此类调用结果 unknown 时
+	// 绝不自动继续。
+	SideEffect bool `json:"side_effect,omitempty"`
 	// Timeout 覆盖 runtime 的全局工具超时；0 表示使用默认。
 	// 供合成事务、慢失败探测等注定超过默认超时的工具声明。
 	Timeout time.Duration `json:"-"`

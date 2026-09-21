@@ -2,7 +2,7 @@ package llm
 
 import "context"
 
-// Role 是 provider-neutral 的角色定义，具体 ChatClient 再映射到上游模型
+// Role 是与 provider 无关的角色定义，具体 ChatClient 再映射到上游模型
 // API 需要的角色名称。
 type Role string
 

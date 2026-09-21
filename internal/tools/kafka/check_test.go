@@ -63,24 +63,24 @@ func TestKafkaCheckReportsTopicGroupsAndActiveLag(t *testing.T) {
 	apiVersions.int32(0)
 
 	metadata := &writer{}
-	metadata.int32(1) // brokers
+	metadata.int32(1) // broker 数
 	metadata.int32(1)
 	metadata.string("localhost")
 	metadata.int32(29092)
-	metadata.int16(-1)        // rack null
+	metadata.int16(-1) // rack 为 null
 	metadata.string("test-cluster")
-	metadata.int32(1) // controller
-	metadata.int32(1) // topics
+	metadata.int32(1) // controller 数
+	metadata.int32(1) // topic 数
 	metadata.int16(0)
 	metadata.string("t")
 	metadata.buffer = append(metadata.buffer, 0) // is_internal=false
-	metadata.int32(2)                            // partitions
+	metadata.int32(2)                            // 分区数
 	for _, id := range []int32{0, 1} {
 		metadata.int16(0)
 		metadata.int32(id)
 		metadata.int32(1)
-		metadata.int32(0) // replicas
-		metadata.int32(0) // isr
+		metadata.int32(0) // 副本列表
+		metadata.int32(0) // 同步副本列表
 	}
 
 	listGroups := &writer{}
@@ -98,18 +98,18 @@ func TestKafkaCheckReportsTopicGroupsAndActiveLag(t *testing.T) {
 	describeGroups.string("Stable")
 	describeGroups.string("consumer")
 	describeGroups.string("range")
-	describeGroups.int32(1) // one member
+	describeGroups.int32(1) // 一个成员
 	describeGroups.string("member-1")
 	describeGroups.string("client")
 	describeGroups.string("/127.0.0.1")
-	describeGroups.int32(0) // metadata bytes
-	describeGroups.int32(0) // assignment bytes
+	describeGroups.int32(0) // 元数据字节数
+	describeGroups.int32(0) // 分配信息字节数
 	describeGroups.int16(0)
 	describeGroups.string("app-old")
 	describeGroups.string("Empty")
 	describeGroups.string("consumer")
 	describeGroups.string("")
-	describeGroups.int32(0) // no members
+	describeGroups.int32(0) // 无成员
 
 	listOffsets := &writer{}
 	listOffsets.int32(1)

@@ -186,6 +186,7 @@ func resolveDiagnosisConfig(opts diagnoseOptions) (diagnoseOptions, error) {
 		MaxSteps:               cfg.Agent.MaxSteps,
 		LLMTimeout:             cfg.Agent.LLMTimeout,
 		ToolTimeout:            cfg.Agent.ToolTimeout,
+		TaskTimeout:            cfg.Agent.TaskTimeout,
 		SkillPath:              cfg.Agent.SkillPath,
 		ToolAllowlist:          cfg.Policy.ToolAllowlist,
 		RunDir:                 cfg.Paths.RunDir,
@@ -204,6 +205,9 @@ func resolveDiagnosisConfig(opts diagnoseOptions) (diagnoseOptions, error) {
 	}
 	if opts.ToolTimeout > 0 {
 		resolved.ToolTimeout = opts.ToolTimeout
+	}
+	if opts.TaskTimeout > 0 {
+		resolved.TaskTimeout = opts.TaskTimeout
 	}
 	if opts.RunDir != "" {
 		resolved.RunDir = opts.RunDir
@@ -230,8 +234,8 @@ func resolveRunDir(configPath, runDir string) (string, error) {
 	return cfg.Paths.RunDir, nil
 }
 
-// resolveSessionDir resolves the CLI or configured root for generated session
-// state. It mirrors run-dir resolution while keeping both data classes apart.
+// resolveSessionDir 解析 CLI 或配置中的会话状态根目录；它与 run-dir 的解析规则
+// 一致，但始终将两类数据分开存放。
 func resolveSessionDir(configPath, sessionDir string) (string, error) {
 	if strings.TrimSpace(sessionDir) != "" {
 		return sessionDir, nil

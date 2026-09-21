@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/binary"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -352,6 +353,143 @@ func TestResumeDiagnosisRunRejectsMaxStepsAlreadyReached(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "max steps 2 already reached by existing trace step 2") {
 		t.Fatalf("error = %q, want max steps reached detail", err.Error())
+	}
+}
+
+func TestResumeDiagnosisRunMarksInterruptedSideEffectUnknownAndBlocksRecovery(t *testing.T) {
+	runDir := t.TempDir()
+	state := runstore.State{
+		RunID:     "run_unknown_effect",
+		Goal:      "check synthetic transaction",
+		Status:    runstore.StatusFailed,
+		CreatedAt: time.Unix(10, 0).UTC(),
+		UpdatedAt: time.Unix(11, 0).UTC(),
+		Calls: []runstore.Call{{
+			CallID:     "call_smoke",
+			Kind:       runstore.CallKindTool,
+			ToolName:   "smoke_run",
+			SideEffect: true,
+			Status:     runstore.CallStatusRunning,
+			StartedAt:  time.Unix(10, 0).UTC(),
+		}},
+	}
+	if err := runstore.NewStore(runDir).Save(state); err != nil {
+		t.Fatalf("save interrupted run: %v", err)
+	}
+
+	_, err := resumeDiagnosisRun(context.Background(), resumeOptions{
+		RunID:      state.RunID,
+		RunDir:     runDir,
+		ConfigPath: writeTestConfig(t, ""),
+	}, "skeleton")
+	if err == nil || !strings.Contains(err.Error(), "automatic resume is blocked") {
+		t.Fatalf("resume error = %v, want unknown side-effect block", err)
+	}
+	loaded, err := runstore.NewStore(runDir).Load(state.RunID)
+	if err != nil {
+		t.Fatalf("load recovered run: %v", err)
+	}
+	if loaded.Calls[0].Status != runstore.CallStatusUnknown || loaded.Calls[0].ErrorClass != runstore.ErrorClassUnknown {
+		t.Fatalf("recovered call = %#v", loaded.Calls[0])
+	}
+}
+
+func TestResumeDiagnosisRunRequiresConfirmationForStaleRunningState(t *testing.T) {
+	runDir := t.TempDir()
+	state := runstore.State{
+		RunID:     "run_stale",
+		Goal:      "check stale run",
+		Status:    runstore.StatusRunning,
+		CreatedAt: time.Unix(10, 0).UTC(),
+		UpdatedAt: time.Unix(11, 0).UTC(),
+	}
+	if err := runstore.NewStore(runDir).Save(state); err != nil {
+		t.Fatalf("save stale run: %v", err)
+	}
+	options := resumeOptions{RunID: state.RunID, RunDir: runDir, ConfigPath: writeTestConfig(t, ""), MaxSteps: 1}
+	if _, err := resumeDiagnosisRun(context.Background(), options, "skeleton"); err == nil || !strings.Contains(err.Error(), "--resume-running") {
+		t.Fatalf("unconfirmed resume error = %v", err)
+	}
+	options.ResumeRunning = true
+	result, err := resumeDiagnosisRun(context.Background(), options, "skeleton")
+	if err != nil {
+		t.Fatalf("confirmed resume: %v", err)
+	}
+	if result.State.Status != runstore.StatusCompleted || result.State.RunID != state.RunID {
+		t.Fatalf("confirmed resume result = %#v", result.State)
+	}
+}
+
+func TestCancelledDiagnosisPersistsTerminalCheckpoint(t *testing.T) {
+	runDir := t.TempDir()
+	sessionDir := t.TempDir()
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	result, err := startDiagnosisRun(ctx, diagnoseOptions{
+		Goal:       "cancel before external work",
+		ConfigPath: writeTestConfig(t, ""),
+		RunDir:     runDir,
+		SessionDir: sessionDir,
+	}, "skeleton")
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("start error = %v, want context cancelled", err)
+	}
+	if result.State.Status != runstore.StatusCancelled || result.State.ErrorClass != runstore.ErrorClassCancelled {
+		t.Fatalf("cancelled result = %#v", result.State)
+	}
+	if err := saveDiagnosisResult(result, err); err == nil {
+		t.Fatal("save diagnosis returned nil after cancellation")
+	}
+	loaded, loadErr := runstore.NewStore(runDir).Load(result.State.RunID)
+	if loadErr != nil {
+		t.Fatalf("load cancelled checkpoint: %v", loadErr)
+	}
+	if loaded.Status != runstore.StatusCancelled || len(loaded.Calls) != 0 {
+		t.Fatalf("saved cancelled state = %#v", loaded)
+	}
+}
+
+func TestTaskTimeoutPersistsCallStatesAndTerminalStatus(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		<-r.Context().Done()
+	}))
+	defer server.Close()
+	logDir := t.TempDir()
+	logFile := filepath.Join(logDir, "agent.log")
+	if err := os.WriteFile(logFile, []byte("no log read expected\n"), 0o600); err != nil {
+		t.Fatalf("write log: %v", err)
+	}
+	runDir := t.TempDir()
+	sessionDir := t.TempDir()
+	configPath := writeTestConfig(t, fmt.Sprintf("targets:\n  backend_base_url: %q\n  log_file: %q\n", server.URL, logFile))
+	result, err := startDiagnosisRun(context.Background(), diagnoseOptions{
+		Goal:        "enforce whole task budget",
+		ConfigPath:  configPath,
+		RunDir:      runDir,
+		SessionDir:  sessionDir,
+		MaxSteps:    3,
+		ToolTimeout: time.Second,
+		TaskTimeout: 20 * time.Millisecond,
+	}, "login-500")
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("start error = %v, want task deadline", err)
+	}
+	if result.State.Status != runstore.StatusTimedOut || result.State.ErrorClass != runstore.ErrorClassDeadlineExceeded || result.State.TaskDeadline == nil || result.State.TaskDeadline.IsZero() {
+		t.Fatalf("timed-out result = %#v", result.State)
+	}
+	if err := saveDiagnosisResult(result, err); err == nil {
+		t.Fatal("save diagnosis returned nil after timeout")
+	}
+	loaded, loadErr := runstore.NewStore(runDir).Load(result.State.RunID)
+	if loadErr != nil {
+		t.Fatalf("load timed-out checkpoint: %v", loadErr)
+	}
+	if len(loaded.Calls) < 2 || loaded.Calls[0].CallID == "" || loaded.Calls[1].Kind != runstore.CallKindTool || loaded.Calls[1].Status != runstore.CallStatusFailed {
+		t.Fatalf("saved calls = %#v", loaded.Calls)
+	}
+	status, statusErr := readDiagnosisStatus(runOptions{RunID: loaded.RunID, RunDir: runDir})
+	if statusErr != nil || !strings.Contains(status, `"error_class": "deadline_exceeded"`) || !strings.Contains(status, `"call_id": "`) {
+		t.Fatalf("status = %q, error = %v", status, statusErr)
 	}
 }
 

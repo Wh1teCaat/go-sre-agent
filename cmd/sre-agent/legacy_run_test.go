@@ -12,9 +12,8 @@ import (
 
 const legacyV1CompletedRunID = "run_legacy_v1"
 
-// TestLegacyV1CompletedRunSupportsStatusAndReport fixes the first persisted
-// run-file shape as a compatibility fixture. In particular, v1 trace entries
-// do not have PlanItemID and v1 diagnoses do not have root_cause.
+// TestLegacyV1CompletedRunSupportsStatusAndReport 将首版持久化运行文件的形状
+// 固化为兼容性样本；其中 v1 trace 没有 PlanItemID，v1 diagnosis 没有 root_cause。
 func TestLegacyV1CompletedRunSupportsStatusAndReport(t *testing.T) {
 	fixturePath := filepath.Join("testdata", "legacy_runs", "v1_completed.json")
 	fixture, err := os.ReadFile(fixturePath)
@@ -37,6 +36,9 @@ func TestLegacyV1CompletedRunSupportsStatusAndReport(t *testing.T) {
 	}
 	if loaded.SessionID != "" {
 		t.Fatalf("legacy fixture session_id = %q, want empty", loaded.SessionID)
+	}
+	if len(loaded.Calls) != 0 || loaded.TaskDeadline != nil {
+		t.Fatalf("legacy checkpoint fields = %#v, want omitted", loaded)
 	}
 
 	status, err := readDiagnosisStatus(runOptions{RunID: legacyV1CompletedRunID, RunDir: runDir})

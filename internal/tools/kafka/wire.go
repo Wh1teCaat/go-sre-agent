@@ -1,4 +1,4 @@
-// Package kafka 实现只读 Kafka 诊断所需的最小 wire protocol 子集。
+// kafka 包实现只读 Kafka 诊断所需的最小线协议子集。
 // 与 postgres_ping 手写 startup message 同一取舍：只覆盖诊断需要的少数
 // 旧版本 API（均为非 flexible 编码），不引入完整客户端依赖。
 package kafka
@@ -217,26 +217,26 @@ func (c *conn) metadata(topic string) (topicMetadata, error) {
 	brokers := response.arrayLen()
 	result.brokerCount = brokers
 	for range brokers {
-		response.int32()  // node id
-		response.string() // host
-		response.int32()  // port
-		response.string() // rack (nullable)
+		response.int32()  // 节点 ID
+		response.string() // 主机
+		response.int32()  // 端口
+		response.string() // rack（可空）
 	}
 	result.clusterID = response.string()
-	response.int32() // controller id
+	response.int32() // controller ID
 	topics := response.arrayLen()
 	for range topics {
 		errorCode := response.int16()
 		name := response.string()
-		response.bool() // is_internal
+		response.bool() // 是否内部 topic
 		partitions := response.arrayLen()
 		ids := make([]int32, 0, partitions)
 		for range partitions {
-			response.int16() // partition error code
+			response.int16() // 分区错误码
 			ids = append(ids, response.int32())
 			response.int32()      // leader
-			response.int32Array() // replicas
-			response.int32Array() // isr
+			response.int32Array() // 副本
+			response.int32Array() // 同步副本
 		}
 		if name == topic {
 			result.errorCode = errorCode
@@ -260,7 +260,7 @@ func (c *conn) listGroups() ([]string, error) {
 	groups := make([]string, 0, count)
 	for range count {
 		groups = append(groups, response.string())
-		response.string() // protocol type
+		response.string() // 协议类型
 	}
 	if response.err != nil {
 		return nil, response.err
@@ -304,13 +304,13 @@ func (c *conn) describeGroups(groups []string) (map[string]groupState, error) {
 		errorCode := response.int16()
 		group := response.string()
 		state := response.string()
-		response.string() // protocol type
-		response.string() // protocol
+		response.string() // 协议类型
+		response.string() // 协议
 		members := response.arrayLen()
 		for range members {
-			response.string() // member id
-			response.string() // client id
-			response.string() // client host
+			response.string() // 成员 ID
+			response.string() // 客户端 ID
+			response.string() // 客户端主机
 			response.skipBytes()
 			response.skipBytes()
 		}
@@ -347,7 +347,7 @@ func (c *conn) committedOffsets(group string, topic string, partitions []int32) 
 		for range count {
 			partition := response.int32()
 			offset := response.int64()
-			response.string() // metadata (nullable)
+			response.string() // 元数据（可空）
 			errorCode := response.int16()
 			if errorCode == 0 {
 				offsets[partition] = offset
@@ -363,13 +363,13 @@ func (c *conn) committedOffsets(group string, topic string, partitions []int32) 
 // endOffsets 用 ListOffsets v1 (timestamp=-1) 取各分区的 log end offset。
 func (c *conn) endOffsets(topic string, partitions []int32) (map[int32]int64, error) {
 	body := &writer{}
-	body.int32(-1) // replica id
+	body.int32(-1) // 副本 ID
 	body.int32(1)
 	body.string(topic)
 	body.int32(int32(len(partitions)))
 	for _, partition := range partitions {
 		body.int32(partition)
-		body.int64(-1) // latest
+		body.int64(-1) // 最新位点
 	}
 	response, err := c.roundTrip(apiKeyListOffsets, 1, body.buffer)
 	if err != nil {
@@ -384,7 +384,7 @@ func (c *conn) endOffsets(topic string, partitions []int32) (map[int32]int64, er
 		for range count {
 			partition := response.int32()
 			errorCode := response.int16()
-			response.int64() // timestamp
+			response.int64() // 时间戳
 			offset := response.int64()
 			if errorCode == 0 {
 				offsets[partition] = offset

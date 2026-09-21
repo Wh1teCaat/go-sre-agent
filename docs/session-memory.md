@@ -15,8 +15,8 @@
 不是工具日志或原始聊天记录，不能替代 run JSON。
 
 `memory.md` 记录会话目标和环境、历史 observation、诊断与结论强度、待验证
-事项、下一步建议，以及 `run_id`/trace step/tool 来源。call ID 在阶段 2 前尚
-不存在，文件会明确标记该限制，不能伪造调用标识。
+事项、下一步建议，以及 `run_id`/trace step/tool/call ID 来源。旧 run 没有
+`call_id` 时会精确标注为 legacy 未记录，不能伪造调用标识。
 
 ## 使用方式
 

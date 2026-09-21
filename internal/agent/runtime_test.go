@@ -10,6 +10,7 @@ import (
 
 	"github.com/y2/go-sre-agent/internal/llm"
 	"github.com/y2/go-sre-agent/internal/policy"
+	runstore "github.com/y2/go-sre-agent/internal/run"
 	"github.com/y2/go-sre-agent/internal/schema"
 	"github.com/y2/go-sre-agent/internal/tools"
 	"github.com/y2/go-sre-agent/internal/trace"
@@ -720,6 +721,118 @@ func TestRuntimeContinuesAfterToolErrorAndPassesFailureObservation(t *testing.T)
 	}
 }
 
+func TestRuntimeCheckpointsCallsBeforeAndAfterExternalExecution(t *testing.T) {
+	registry := tools.NewRegistry()
+	var checkpoints []Checkpoint
+	sawRunningTool := false
+	tool := checkpointRuntimeTool{onRun: func() {
+		for _, checkpoint := range checkpoints {
+			if len(checkpoint.Calls) == 0 {
+				continue
+			}
+			last := checkpoint.Calls[len(checkpoint.Calls)-1]
+			if last.Kind == runstore.CallKindTool && last.Status == runstore.CallStatusRunning && last.Result == nil {
+				sawRunningTool = true
+			}
+		}
+	}}
+	if err := registry.Register(tool); err != nil {
+		t.Fatalf("register tool: %v", err)
+	}
+	provider := llm.NewMockProvider([]schema.Action{
+		{Type: schema.ActionTypeToolCall, Tool: tool.Spec().Name, Args: json.RawMessage(`{"url":"http://localhost/health"}`)},
+		{
+			Type: schema.ActionTypeFinal,
+			Final: &schema.Diagnosis{
+				Summary:   "tool result is recorded",
+				RootCause: &schema.RootCause{Status: "undetermined"},
+				Evidence:  []schema.Evidence{{Step: 1, Tool: tool.Spec().Name, Summary: "backend returned 200"}},
+			},
+		},
+	})
+	store := new(trace.MemoryStore)
+	runtime := NewRuntime(RuntimeConfig{
+		MaxSteps:    2,
+		ToolTimeout: time.Second,
+		Checkpoint: func(checkpoint Checkpoint) error {
+			checkpoint.Calls = append([]runstore.Call(nil), checkpoint.Calls...)
+			checkpoint.Trace = append([]trace.Entry(nil), checkpoint.Trace...)
+			checkpoints = append(checkpoints, checkpoint)
+			return nil
+		},
+	}, provider, registry, policy.NewValidator(policy.Config{ToolAllowlist: []string{tool.Spec().Name}}), store)
+
+	if _, err := runtime.Run(context.Background(), "check checkpoint lifecycle"); err != nil {
+		t.Fatalf("run runtime: %v", err)
+	}
+	if !sawRunningTool {
+		t.Fatalf("checkpoints = %#v, want tool running checkpoint before tool.Run", checkpoints)
+	}
+	calls := runtime.Calls()
+	if len(calls) != 3 {
+		t.Fatalf("calls = %#v, want two LLM decisions and one tool call", calls)
+	}
+	toolCall := calls[1]
+	if toolCall.Kind != runstore.CallKindTool || toolCall.Status != runstore.CallStatusSucceeded || toolCall.Result == nil || toolCall.Result.Summary != "backend returned 200" {
+		t.Fatalf("tool call = %#v", toolCall)
+	}
+	entries := store.List()
+	if entries[0].CallID != toolCall.CallID || entries[1].CallID == "" {
+		t.Fatalf("trace call ids = %#v, want tool and final call links", entries)
+	}
+}
+
+func TestRuntimeBoundsRetriesByErrorClass(t *testing.T) {
+	transient := &retryProvider{remainingTransientFailures: 1}
+	runtime := NewRuntime(RuntimeConfig{MaxSteps: 1}, transient, tools.NewRegistry(), policy.NewValidator(policy.Config{}), new(trace.MemoryStore))
+	if _, err := runtime.Run(context.Background(), "retry temporary provider error"); err != nil {
+		t.Fatalf("run transient provider: %v", err)
+	}
+	transientCalls := runtime.Calls()
+	if transient.calls != 2 || len(transientCalls) != 2 || transientCalls[0].ErrorClass != runstore.ErrorClassTransient || transientCalls[1].Status != runstore.CallStatusSucceeded {
+		t.Fatalf("transient calls = %#v / provider=%d", transientCalls, transient.calls)
+	}
+	httpTransient := &retryProvider{remainingHTTPFailures: 1}
+	runtime = NewRuntime(RuntimeConfig{MaxSteps: 1}, httpTransient, tools.NewRegistry(), policy.NewValidator(policy.Config{}), new(trace.MemoryStore))
+	if _, err := runtime.Run(context.Background(), "retry provider 503"); err != nil {
+		t.Fatalf("run transient HTTP provider: %v", err)
+	}
+	if httpTransient.calls != 2 || runtime.Calls()[0].ErrorClass != runstore.ErrorClassTransient {
+		t.Fatalf("HTTP transient calls = %#v / provider=%d", runtime.Calls(), httpTransient.calls)
+	}
+
+	permanent := &retryProvider{permanentErr: errors.New("invalid credentials")}
+	runtime = NewRuntime(RuntimeConfig{MaxSteps: 1}, permanent, tools.NewRegistry(), policy.NewValidator(policy.Config{}), new(trace.MemoryStore))
+	if _, err := runtime.Run(context.Background(), "do not retry permanent provider error"); err == nil {
+		t.Fatal("permanent provider failure succeeded")
+	}
+	permanentCalls := runtime.Calls()
+	if permanent.calls != 1 || len(permanentCalls) != 1 || permanentCalls[0].ErrorClass != runstore.ErrorClassPermanent {
+		t.Fatalf("permanent calls = %#v / provider=%d", permanentCalls, permanent.calls)
+	}
+}
+
+func TestRuntimeMarksCancelledSideEffectToolUnknown(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	registry := tools.NewRegistry()
+	tool := cancellingRuntimeTool{cancel: cancel}
+	if err := registry.Register(tool); err != nil {
+		t.Fatalf("register tool: %v", err)
+	}
+	provider := llm.NewMockProvider([]schema.Action{{Type: schema.ActionTypeToolCall, Tool: tool.Spec().Name, Args: json.RawMessage(`{}`)}})
+	runtime := NewRuntime(RuntimeConfig{MaxSteps: 2}, provider, registry, policy.NewValidator(policy.Config{ToolAllowlist: []string{tool.Spec().Name}}), new(trace.MemoryStore))
+
+	_, err := runtime.Run(ctx, "cancel side-effect tool")
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("run error = %v, want context cancelled", err)
+	}
+	calls := runtime.Calls()
+	if len(calls) != 2 || calls[1].Status != runstore.CallStatusUnknown || calls[1].ErrorClass != runstore.ErrorClassUnknown || !runstore.HasUnknownSideEffect(calls) {
+		t.Fatalf("calls = %#v, want unknown side-effect tool call", calls)
+	}
+}
+
 type captureProvider struct {
 	plans        []*schema.Plan
 	actions      []schema.Action
@@ -728,6 +841,68 @@ type captureProvider struct {
 	requests     []llm.Request
 	planIndex    int
 	index        int
+}
+
+type checkpointRuntimeTool struct {
+	onRun func()
+}
+
+func (t checkpointRuntimeTool) Spec() tools.ToolSpec {
+	return runtimeTool{}.Spec()
+}
+
+func (t checkpointRuntimeTool) Run(ctx context.Context, args json.RawMessage) (schema.Observation, error) {
+	if t.onRun != nil {
+		t.onRun()
+	}
+	return runtimeTool{}.Run(ctx, args)
+}
+
+type retryProvider struct {
+	remainingTransientFailures int
+	remainingHTTPFailures      int
+	permanentErr               error
+	calls                      int
+}
+
+func (p *retryProvider) Plan(context.Context, llm.Request) (*schema.Plan, error) {
+	return nil, nil
+}
+
+func (p *retryProvider) Next(context.Context, llm.Request) (llm.Decision, error) {
+	p.calls++
+	if p.remainingTransientFailures > 0 {
+		p.remainingTransientFailures--
+		return llm.Decision{}, temporaryRuntimeError{}
+	}
+	if p.remainingHTTPFailures > 0 {
+		p.remainingHTTPFailures--
+		return llm.Decision{}, errors.New("provider request failed: status 503")
+	}
+	if p.permanentErr != nil {
+		return llm.Decision{}, p.permanentErr
+	}
+	return llm.Decision{Action: &schema.Action{Type: schema.ActionTypeFinal, Final: &schema.Diagnosis{Summary: "retry succeeded"}}}, nil
+}
+
+type temporaryRuntimeError struct{}
+
+func (temporaryRuntimeError) Error() string   { return "temporary provider transport failure" }
+func (temporaryRuntimeError) Timeout() bool   { return false }
+func (temporaryRuntimeError) Temporary() bool { return true }
+
+type cancellingRuntimeTool struct {
+	cancel context.CancelFunc
+}
+
+func (t cancellingRuntimeTool) Spec() tools.ToolSpec {
+	return tools.ToolSpec{Name: "effect_tool", Description: "side-effect test tool", Schema: tools.ToolSchema{Properties: map[string]tools.ArgSpec{}}, SideEffect: true}
+}
+
+func (t cancellingRuntimeTool) Run(ctx context.Context, _ json.RawMessage) (schema.Observation, error) {
+	t.cancel()
+	<-ctx.Done()
+	return schema.Observation{Tool: t.Spec().Name, Summary: "effect tool interrupted"}, ctx.Err()
 }
 
 func (p *captureProvider) Plan(ctx context.Context, request llm.Request) (*schema.Plan, error) {

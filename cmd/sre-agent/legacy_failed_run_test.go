@@ -12,8 +12,8 @@ import (
 
 const legacyV1FailedRunID = "run_legacy_v1_failed"
 
-// TestLegacyV1FailedRunCanResumeWithMockSkeleton verifies that a failed run
-// written before diagnosis.root_cause and trace.PlanItemID existed can resume.
+// TestLegacyV1FailedRunCanResumeWithMockSkeleton 验证早于 diagnosis.root_cause
+// 和 trace.PlanItemID 字段的失败运行记录仍可用 mock skeleton 恢复。
 func TestLegacyV1FailedRunCanResumeWithMockSkeleton(t *testing.T) {
 	fixturePath := filepath.Join("testdata", "legacy_runs", "v1_failed.json")
 	fixture, err := os.ReadFile(fixturePath)
@@ -40,6 +40,9 @@ func TestLegacyV1FailedRunCanResumeWithMockSkeleton(t *testing.T) {
 	}
 	if result.State.SessionID != "" {
 		t.Fatalf("resumed legacy session_id = %q, want empty", result.State.SessionID)
+	}
+	if len(result.State.Calls) == 0 || result.State.Calls[0].CallID == "" {
+		t.Fatalf("resumed legacy run did not add phase-2 call checkpoints: %#v", result.State.Calls)
 	}
 	if result.State.Status != runstore.StatusCompleted {
 		t.Fatalf("resumed status = %q, want completed", result.State.Status)

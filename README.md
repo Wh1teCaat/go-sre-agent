@@ -10,6 +10,7 @@
 - 支持 OpenAI-compatible、Ollama、Anthropic 以及本地 mock 场景。
 - 默认使用 ReAct；复杂任务由 LLM 按需请求 plan，plan 不占用执行 step。
 - 保存完整 trace 和运行状态，支持查询、恢复和重新生成报告。
+- 在每次 LLM/工具调用前后原子 checkpoint，支持 Ctrl-C、任务总超时和受限恢复。
 - 为同一个排障问题保存隔离的会话 Markdown 记忆，连续诊断只加载指定会话。
 - 通过工具白名单、目标白名单、参数校验、超时和脱敏限制执行边界。
 - 最终报告只能引用本次运行中真实存在的工具证据。
@@ -28,7 +29,8 @@ Policy 校验 action
 继续决策，直到生成诊断报告
 ```
 
-详细设计见 [架构文档](docs/architecture.md)。
+详细设计见 [架构文档](docs/architecture.md)；运行取消和恢复规则见
+[运行恢复说明](docs/run-recovery.md)。
 
 ## 快速开始
 
@@ -79,6 +81,7 @@ agent:
   max_steps: 12
   llm_timeout: 30s
   tool_timeout: 5s
+  task_timeout: 5m
   skill_path: skills/sre-diagnosis/SKILL.md
 
 policy:

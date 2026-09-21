@@ -23,7 +23,7 @@ func NewOpenAICompatibleChatClient(config Config) *OpenAICompatibleChatClient {
 }
 
 // Chat 把通用 chat 请求发送到 OpenAI-compatible endpoint，并返回原始
-// assistant content 供上层解释。
+// 助手内容供上层解释。
 func (c *OpenAICompatibleChatClient) Chat(ctx context.Context, request ChatRequest) (string, error) {
 	if strings.TrimSpace(c.config.APIKey) == "" {
 		return "", fmt.Errorf("openai compatible api key is required")
@@ -118,7 +118,7 @@ func buildOpenAIChatCompletionRequest(config Config, request ChatRequest) openAI
 		Temperature: request.Temperature,
 	}
 	if request.OutputMode == OutputJSON {
-		// JSON mode 只提高模型输出 JSON 的概率，不能替代 ActionPlanner 和 policy 的解析/校验。
+		// JSON 模式只提高模型输出 JSON 的概率，不能替代 ActionPlanner 和 policy 的解析/校验。
 		payload.ResponseFormat = &openAIResponseFormat{Type: "json_object"}
 	}
 	return payload

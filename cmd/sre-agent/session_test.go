@@ -43,7 +43,7 @@ func TestNewDiagnosisPersistsSessionStateAndMarkdownMemory(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load session memory: %v", err)
 	}
-	for _, want := range []string{"# Session Memory", result.State.RunID, "MVP 诊断闭环验证完成", "not_recorded", "Call IDs are unavailable until phase 2"} {
+	for _, want := range []string{"# Session Memory", result.State.RunID, "MVP 诊断闭环验证完成", "not_recorded", "call ID `call_"} {
 		if !strings.Contains(memory, want) {
 			t.Fatalf("session memory missing %q:\n%s", want, memory)
 		}

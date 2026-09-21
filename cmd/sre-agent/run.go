@@ -54,25 +54,31 @@ func readDiagnosisStatus(opts runOptions) (string, error) {
 		return "", err
 	}
 	view := struct {
-		RunID      string          `json:"run_id"`
-		SessionID  string          `json:"session_id,omitempty"`
-		Goal       string          `json:"goal"`
-		Status     runstore.Status `json:"status"`
-		Plan       schema.Plan     `json:"plan"`
-		Error      string          `json:"error,omitempty"`
-		TraceSteps int             `json:"trace_steps"`
-		CreatedAt  time.Time       `json:"created_at"`
-		UpdatedAt  time.Time       `json:"updated_at"`
+		RunID        string              `json:"run_id"`
+		SessionID    string              `json:"session_id,omitempty"`
+		Goal         string              `json:"goal"`
+		Status       runstore.Status     `json:"status"`
+		Plan         schema.Plan         `json:"plan"`
+		Calls        []runstore.Call     `json:"calls,omitempty"`
+		Error        string              `json:"error,omitempty"`
+		ErrorClass   runstore.ErrorClass `json:"error_class,omitempty"`
+		TraceSteps   int                 `json:"trace_steps"`
+		TaskDeadline *time.Time          `json:"task_deadline,omitempty"`
+		CreatedAt    time.Time           `json:"created_at"`
+		UpdatedAt    time.Time           `json:"updated_at"`
 	}{
-		RunID:      state.RunID,
-		SessionID:  state.SessionID,
-		Goal:       tools.RedactSensitive(state.Goal),
-		Status:     state.Status,
-		Plan:       state.Plan,
-		Error:      tools.RedactSensitive(state.Error),
-		TraceSteps: len(state.Trace),
-		CreatedAt:  state.CreatedAt,
-		UpdatedAt:  state.UpdatedAt,
+		RunID:        state.RunID,
+		SessionID:    state.SessionID,
+		Goal:         tools.RedactSensitive(state.Goal),
+		Status:       state.Status,
+		Plan:         state.Plan,
+		Calls:        state.Calls,
+		Error:        tools.RedactSensitive(state.Error),
+		ErrorClass:   state.ErrorClass,
+		TraceSteps:   len(state.Trace),
+		TaskDeadline: state.TaskDeadline,
+		CreatedAt:    state.CreatedAt,
+		UpdatedAt:    state.UpdatedAt,
 	}
 	data, err := json.MarshalIndent(view, "", "  ")
 	if err != nil {

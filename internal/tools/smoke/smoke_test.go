@@ -57,4 +57,7 @@ func TestSmokeSpecDeclaresTimeout(t *testing.T) {
 	if got := New(nil, "", 30*time.Second).Spec().Timeout; got != 30*time.Second {
 		t.Fatalf("timeout = %s, want 30s", got)
 	}
+	if !New(nil, "", 0).Spec().SideEffect {
+		t.Fatal("smoke spec side_effect = false, want true")
+	}
 }

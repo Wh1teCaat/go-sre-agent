@@ -182,13 +182,13 @@ func verifyPingPong(conn net.Conn, reader *bufio.Reader) (int64, error) {
 			return 0, fmt.Errorf("read frame payload: %w", err)
 		}
 		switch opcode {
-		case 0xA: // pong
+		case 0xA: // pong 帧
 			latency := time.Since(startedAt).Milliseconds()
 			if latency < 0 {
 				latency = 0
 			}
 			return latency, nil
-		case 0x8: // close
+		case 0x8: // close 帧
 			return 0, fmt.Errorf("server closed connection before pong")
 		}
 	}

@@ -3,13 +3,16 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"net"
 	"reflect"
 	"strings"
 	"time"
 
 	"github.com/y2/go-sre-agent/internal/llm"
 	"github.com/y2/go-sre-agent/internal/policy"
+	runstore "github.com/y2/go-sre-agent/internal/run"
 	"github.com/y2/go-sre-agent/internal/schema"
 	"github.com/y2/go-sre-agent/internal/tools"
 	"github.com/y2/go-sre-agent/internal/trace"
@@ -23,6 +26,18 @@ type RuntimeConfig struct {
 	TargetContext    map[string]any
 	ToolArgOverrides map[string]map[string]any
 	Memories         []schema.Memory
+	// ExistingCalls 在恢复尝试前还原持久化调用记录。
+	ExistingCalls []runstore.Call
+	// Checkpoint 在每次外部调用前后持久化 runtime 快照；返回错误会阻止下一次外部
+	// 调用开始。
+	Checkpoint func(Checkpoint) error
+}
+
+// Checkpoint 是安全恢复所需的 runtime 状态持久化子集。
+type Checkpoint struct {
+	Plan  schema.Plan
+	Trace []trace.Entry
+	Calls []runstore.Call
 }
 
 type Runtime struct {
@@ -32,6 +47,7 @@ type Runtime struct {
 	validator *policy.Validator
 	trace     *trace.MemoryStore
 	plan      *schema.Plan
+	calls     []runstore.Call
 }
 
 func NewRuntime(config RuntimeConfig, provider llm.Provider, registry *tools.Registry, validator *policy.Validator, traceStore *trace.MemoryStore) *Runtime {
@@ -41,6 +57,7 @@ func NewRuntime(config RuntimeConfig, provider llm.Provider, registry *tools.Reg
 		registry:  registry,
 		validator: validator,
 		trace:     traceStore,
+		calls:     append([]runstore.Call(nil), config.ExistingCalls...),
 	}
 }
 
@@ -53,6 +70,9 @@ func (r *Runtime) Run(ctx context.Context, goal string) (*schema.Diagnosis, erro
 		return nil, fmt.Errorf("max steps %d already reached by existing trace step %d", r.config.MaxSteps, startStep-1)
 	}
 	for step := startStep; step <= r.config.MaxSteps; step++ {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		entries := r.trace.List()
 		observations := observationsFromTrace(entries)
 		var actionMeta llmMeta
@@ -95,20 +115,82 @@ func (r *Runtime) Run(ctx context.Context, goal string) (*schema.Diagnosis, erro
 		case schema.ActionTypeFinal:
 			r.applyCoverage(action.Final.Coverage)
 			r.trace.Append(actionTraceEntry(step, action, actionMeta, r.config.Model))
+			if err := r.checkpoint(); err != nil {
+				return nil, fmt.Errorf("checkpoint final action: %w", err)
+			}
 			return action.Final, nil
 		case schema.ActionTypeToolCall:
 			// 工具失败也会写入 trace/observation，下一轮交给 LLM 决定如何继续。
-			r.executeTool(ctx, step, action, actionMeta)
+			if err := r.executeTool(ctx, step, action, actionMeta); err != nil {
+				return nil, err
+			}
 		}
 	}
 
 	return nil, fmt.Errorf("max steps reached: %d", r.config.MaxSteps)
 }
 
+// Calls 返回 runtime 持久化外部调用记录的副本。
+func (r *Runtime) Calls() []runstore.Call {
+	return append([]runstore.Call(nil), r.calls...)
+}
+
+// checkpoint 发布一致的 trace、plan 与调用快照。它刻意同步执行：checkpoint 失败
+// 时必须停止新的外部操作。
+func (r *Runtime) checkpoint() error {
+	if r.config.Checkpoint == nil {
+		return nil
+	}
+	return r.config.Checkpoint(Checkpoint{
+		Plan:  r.Plan(),
+		Trace: append([]trace.Entry(nil), r.trace.List()...),
+		Calls: r.Calls(),
+	})
+}
+
+// startCall 在外部请求开始前写入 running 调用记录。
+func (r *Runtime) startCall(call runstore.Call) (int, error) {
+	call.CallID = runstore.NewCallID(time.Now())
+	call.Status = runstore.CallStatusRunning
+	call.StartedAt = time.Now().UTC()
+	r.calls = append(r.calls, call)
+	index := len(r.calls) - 1
+	if err := r.checkpoint(); err != nil {
+		return -1, fmt.Errorf("checkpoint call %s before execution: %w", call.CallID, err)
+	}
+	return index, nil
+}
+
+// finishCall 记录可观察结果，并将其与 trace 一同 checkpoint。
+func (r *Runtime) finishCall(index int, status runstore.CallStatus, class runstore.ErrorClass, callErr error, result *schema.Observation) error {
+	if index < 0 || index >= len(r.calls) {
+		return fmt.Errorf("call checkpoint index %d is out of range", index)
+	}
+	call := &r.calls[index]
+	call.Status = status
+	call.ErrorClass = class
+	if callErr != nil {
+		call.Error = tools.RedactSensitive(callErr.Error())
+	} else {
+		call.Error = ""
+	}
+	if result != nil {
+		copied := *result
+		call.Result = &copied
+	}
+	finishedAt := time.Now().UTC()
+	call.FinishedAt = &finishedAt
+	if err := r.checkpoint(); err != nil {
+		return fmt.Errorf("checkpoint call %s after execution: %w", call.CallID, err)
+	}
+	return nil
+}
+
 type llmMeta struct {
 	StartedAt time.Time
 	Duration  time.Duration
 	Attempts  int
+	CallID    string
 }
 
 func addLLMMeta(total *llmMeta, next llmMeta) {
@@ -117,6 +199,9 @@ func addLLMMeta(total *llmMeta, next llmMeta) {
 	}
 	total.Duration += next.Duration
 	total.Attempts += next.Attempts
+	if next.CallID != "" {
+		total.CallID = next.CallID
+	}
 }
 
 func (r *Runtime) requestValidPlan(ctx context.Context, request llm.Request) (*schema.Plan, llmMeta, error) {
@@ -125,6 +210,14 @@ func (r *Runtime) requestValidPlan(ctx context.Context, request llm.Request) (*s
 	var lastErr error
 	for attempt := 1; attempt <= 2; attempt++ {
 		meta.Attempts = attempt
+		callIndex, err := r.startCall(runstore.Call{
+			Kind:    runstore.CallKindLLMPlan,
+			Step:    request.Step,
+			Attempt: attempt,
+		})
+		if err != nil {
+			return lastPlan, meta, err
+		}
 		callCtx, cancel := context.WithTimeout(ctx, r.config.LLMTimeout)
 		startedAt := time.Now()
 		plan, err := r.provider.Plan(callCtx, request)
@@ -143,16 +236,29 @@ func (r *Runtime) requestValidPlan(ctx context.Context, request llm.Request) (*s
 			}
 		}
 		if err == nil {
+			if checkpointErr := r.finishCall(callIndex, runstore.CallStatusSucceeded, "", nil, nil); checkpointErr != nil {
+				return lastPlan, meta, checkpointErr
+			}
+			meta.CallID = r.calls[callIndex].CallID
 			return plan, meta, nil
+		}
+		class := runstore.ErrorClassValidation
+		if providerFailed {
+			class = ClassifyError(ctx, err)
+		}
+		if checkpointErr := r.finishCall(callIndex, callStatusForError(class), class, lastErr, nil); checkpointErr != nil {
+			return lastPlan, meta, checkpointErr
 		}
 		if attempt == 2 {
 			break
 		}
 		request.Correction = correctionMessage(lastErr)
-		if providerFailed {
+		if shouldRetryCall(class) {
 			if err := waitForRetry(ctx, 100*time.Millisecond); err != nil {
 				return lastPlan, meta, err
 			}
+		} else {
+			break
 		}
 	}
 	return lastPlan, meta, lastErr
@@ -166,6 +272,14 @@ func (r *Runtime) requestValidDecision(ctx context.Context, request llm.Request,
 	var lastErr error
 	for attempt := 1; attempt <= 2; attempt++ {
 		meta.Attempts = attempt
+		callIndex, err := r.startCall(runstore.Call{
+			Kind:    runstore.CallKindLLMDecision,
+			Step:    request.Step,
+			Attempt: attempt,
+		})
+		if err != nil {
+			return lastDecision, meta, err
+		}
 		callCtx, cancel := context.WithTimeout(ctx, r.config.LLMTimeout)
 		startedAt := time.Now()
 		decision, err := r.provider.Next(callCtx, request)
@@ -215,16 +329,29 @@ func (r *Runtime) requestValidDecision(ctx context.Context, request llm.Request,
 			}
 		}
 		if err == nil {
+			if checkpointErr := r.finishCall(callIndex, runstore.CallStatusSucceeded, "", nil, nil); checkpointErr != nil {
+				return lastDecision, meta, checkpointErr
+			}
+			meta.CallID = r.calls[callIndex].CallID
 			return decision, meta, nil
+		}
+		class := runstore.ErrorClassValidation
+		if providerFailed {
+			class = ClassifyError(ctx, err)
+		}
+		if checkpointErr := r.finishCall(callIndex, callStatusForError(class), class, lastErr, nil); checkpointErr != nil {
+			return lastDecision, meta, checkpointErr
 		}
 		if attempt == 2 {
 			break
 		}
 		request.Correction = correctionMessage(lastErr)
-		if providerFailed {
+		if shouldRetryCall(class) {
 			if err := waitForRetry(ctx, 100*time.Millisecond); err != nil {
 				return lastDecision, meta, err
 			}
+		} else {
+			break
 		}
 	}
 	return lastDecision, meta, lastErr
@@ -250,9 +377,43 @@ func waitForRetry(ctx context.Context, delay time.Duration) error {
 	}
 }
 
+// ClassifyError 将执行失败映射为稳定状态值。父 context 取消始终优先于子调用超时，
+// 因为它表示任务被主动停止或总任务预算已耗尽。
+func ClassifyError(ctx context.Context, err error) runstore.ErrorClass {
+	if errors.Is(ctx.Err(), context.Canceled) || errors.Is(err, context.Canceled) {
+		return runstore.ErrorClassCancelled
+	}
+	if errors.Is(ctx.Err(), context.DeadlineExceeded) || errors.Is(err, context.DeadlineExceeded) {
+		return runstore.ErrorClassDeadlineExceeded
+	}
+	var netErr net.Error
+	if errors.As(err, &netErr) && (netErr.Timeout() || netErr.Temporary()) {
+		return runstore.ErrorClassTransient
+	}
+	message := strings.ToLower(err.Error())
+	if strings.Contains(message, "status 5") || strings.Contains(message, "status 429") || strings.Contains(message, "status 408") {
+		return runstore.ErrorClassTransient
+	}
+	return runstore.ErrorClassPermanent
+}
+
+// callStatusForError 为非工具调用失败选择持久化状态。
+func callStatusForError(class runstore.ErrorClass) runstore.CallStatus {
+	if class == runstore.ErrorClassCancelled {
+		return runstore.CallStatusCancelled
+	}
+	return runstore.CallStatusFailed
+}
+
+// shouldRetryCall 将重试限制在纠错和临时传输失败路径。
+func shouldRetryCall(class runstore.ErrorClass) bool {
+	return class == runstore.ErrorClassValidation || class == runstore.ErrorClassTransient || class == runstore.ErrorClassDeadlineExceeded
+}
+
 func actionTraceEntry(step int, action schema.Action, meta llmMeta, model string) trace.Entry {
 	return trace.Entry{
 		Step:           step,
+		CallID:         meta.CallID,
 		ActionType:     action.Type,
 		ThoughtSummary: action.ThoughtSummary,
 		ToolName:       action.Tool,
@@ -367,17 +528,17 @@ func validateNoDuplicateToolCall(action schema.Action, entries []trace.Entry) er
 	candidate := redactTraceArgs(args)
 	for _, entry := range entries {
 		if entry.ToolName == action.Tool && entry.Error == "" && reflect.DeepEqual(entry.Args, candidate) {
-			// ponytail: this one-shot runtime blocks exact successful repeats; add an explicit
-			// repeat intent/fingerprint if deliberate repeated measurements become a feature.
+			// 当前单次 runtime 会阻止完全相同的成功重复调用；若将来需要有意重复测量，
+			// 应增加明确的重复意图或指纹。
 			return fmt.Errorf("duplicate successful tool call matches step %d", entry.Step)
 		}
 	}
 	return nil
 }
 
-// executeTool 在受控超时内运行工具，并把成功或失败都写入 trace。
-// 工具失败（包括工具未注册）不会中断整个诊断链路，下一步由 LLM 基于失败 observation 决策。
-func (r *Runtime) executeTool(ctx context.Context, step int, action schema.Action, meta llmMeta) {
+// executeTool 在调用工具前 checkpoint 执行中的调用，再将其结果与 trace 一同保存。
+// 已知工具失败仍作为 observation；只有 checkpoint 失败会停止诊断循环。
+func (r *Runtime) executeTool(ctx context.Context, step int, action schema.Action, meta llmMeta) error {
 	args := map[string]any{}
 	_ = json.Unmarshal(action.Args, &args)
 	traceArgs := redactTraceArgs(args)
@@ -385,6 +546,21 @@ func (r *Runtime) executeTool(ctx context.Context, step int, action schema.Actio
 	startedAt := time.Now()
 	var observation schema.Observation
 	var err error
+	var sideEffect bool
+	if tool, ok := r.registry.Get(action.Tool); ok {
+		sideEffect = tool.Spec().SideEffect
+	}
+	callIndex, checkpointErr := r.startCall(runstore.Call{
+		Kind:       runstore.CallKindTool,
+		Step:       step,
+		ToolName:   action.Tool,
+		Args:       traceArgs,
+		SideEffect: sideEffect,
+	})
+	if checkpointErr != nil {
+		return checkpointErr
+	}
+
 	if tool, ok := r.registry.Get(action.Tool); ok {
 		timeout := r.config.ToolTimeout
 		if specTimeout := tool.Spec().Timeout; specTimeout > 0 {
@@ -420,6 +596,7 @@ func (r *Runtime) executeTool(ctx context.Context, step int, action schema.Actio
 
 	entry := trace.Entry{
 		Step:           step,
+		CallID:         r.calls[callIndex].CallID,
 		ActionType:     action.Type,
 		ThoughtSummary: action.ThoughtSummary,
 		PlanItemID:     strings.TrimSpace(action.PlanItemID),
@@ -437,6 +614,27 @@ func (r *Runtime) executeTool(ctx context.Context, step int, action schema.Actio
 	}
 	// trace 是报告证据和下一轮 observation 的共同来源，因此成功/失败都必须落盘到 store。
 	r.trace.Append(entry)
+
+	result := observation
+	status := runstore.CallStatusSucceeded
+	class := runstore.ErrorClass("")
+	callErr := error(nil)
+	if err != nil {
+		callErr = err
+		class = ClassifyError(ctx, err)
+		status = callStatusForError(class)
+		// 有副作用的调用即使返回错误，也可能在响应丢失前到达目标；必须保留该不确定性
+		// 供恢复逻辑处理。
+		if sideEffect {
+			status = runstore.CallStatusUnknown
+			class = runstore.ErrorClassUnknown
+			callErr = fmt.Errorf("execution outcome is unknown: %w", err)
+		}
+	}
+	if checkpointErr := r.finishCall(callIndex, status, class, callErr, &result); checkpointErr != nil {
+		return checkpointErr
+	}
+	return nil
 }
 
 func redactObservation(observation schema.Observation) schema.Observation {

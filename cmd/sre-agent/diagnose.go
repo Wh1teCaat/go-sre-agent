@@ -24,7 +24,7 @@ func startDiagnosisRun(ctx context.Context, opts diagnoseOptions, mockScenario s
 	if err != nil {
 		return diagnoseResult{}, err
 	}
-	return executeDiagnosisRun(ctx, opts, runstore.NewRunID(startedAt), startedAt, nil, schema.Plan{}, mockScenario)
+	return executeDiagnosisRun(ctx, opts, runstore.NewRunID(startedAt), startedAt, nil, schema.Plan{}, nil, mockScenario)
 }
 
 // resumeDiagnosisRun 从已保存的 run state 恢复 trace，并用同一个 run id 继续诊断。
@@ -57,11 +57,23 @@ func resumeDiagnosisRun(ctx context.Context, opts resumeOptions, mockScenario st
 		}
 		return diagnoseResult{}, fmt.Errorf("run %q is already completed; use report instead", opts.RunID)
 	}
-	if previous.Status != runstore.StatusFailed {
+	if previous.Status == runstore.StatusRunning && !opts.ResumeRunning {
+		return diagnoseResult{}, fmt.Errorf("run %q is still marked running; confirm its original process has stopped and retry with --resume-running", opts.RunID)
+	}
+	if !resumableStatus(previous.Status) {
 		return diagnoseResult{}, fmt.Errorf("run %q has unsupported status %q", opts.RunID, previous.Status)
 	}
 	if previous.Diagnosis != nil {
-		return diagnoseResult{}, fmt.Errorf("failed run %q unexpectedly contains diagnosis", opts.RunID)
+		return diagnoseResult{}, fmt.Errorf("incomplete run %q unexpectedly contains diagnosis", opts.RunID)
+	}
+	if runstore.MarkInterruptedCallsUnknown(previous.Calls, time.Now().UTC()) {
+		previous.UpdatedAt = time.Now().UTC()
+		if err := store.Save(previous); err != nil {
+			return diagnoseResult{}, fmt.Errorf("checkpoint interrupted calls: %w", err)
+		}
+	}
+	if runstore.HasUnknownSideEffect(previous.Calls) {
+		return diagnoseResult{}, fmt.Errorf("run %q contains a side-effecting call with unknown outcome; automatic resume is blocked, inspect the target and start a new run if another probe is required", opts.RunID)
 	}
 
 	return executeDiagnosisRun(ctx, diagnoseOptions{
@@ -70,17 +82,28 @@ func resumeDiagnosisRun(ctx context.Context, opts resumeOptions, mockScenario st
 		MaxSteps:               opts.MaxSteps,
 		LLMTimeout:             opts.LLMTimeout,
 		ToolTimeout:            opts.ToolTimeout,
+		TaskTimeout:            opts.TaskTimeout,
 		RunDir:                 runDir,
 		SessionID:              previous.SessionID,
 		SessionDir:             opts.SessionDir,
 		Environment:            opts.Environment,
 		OverwriteSessionMemory: opts.OverwriteSessionMemory,
-	}, previous.RunID, previous.CreatedAt, previous.Trace, previous.Plan, mockScenario)
+	}, previous.RunID, previous.CreatedAt, previous.Trace, previous.Plan, previous.Calls, mockScenario)
+}
+
+// resumableStatus 判断终态或陈旧运行态在通过恢复校验后能否安全进入新的执行尝试。
+func resumableStatus(status runstore.Status) bool {
+	switch status {
+	case runstore.StatusFailed, runstore.StatusCancelled, runstore.StatusTimedOut, runstore.StatusRunning:
+		return true
+	default:
+		return false
+	}
 }
 
 // executeDiagnosisRun 初始化 runtime，执行诊断并组装最终运行状态。
 // 参数: ctx 控制取消，opts 配置执行，runID/createdAt/existingTrace/existingPlan 恢复运行状态，mockScenario 为可选 mock；返回: 运行结果和错误。
-func executeDiagnosisRun(ctx context.Context, opts diagnoseOptions, runID string, createdAt time.Time, existingTrace []trace.Entry, existingPlan schema.Plan, mockScenario string) (diagnoseResult, error) {
+func executeDiagnosisRun(ctx context.Context, opts diagnoseOptions, runID string, createdAt time.Time, existingTrace []trace.Entry, existingPlan schema.Plan, existingCalls []runstore.Call, mockScenario string) (diagnoseResult, error) {
 	setup, err := initializeDiagnosis(opts, mockScenario)
 	if err != nil {
 		return diagnoseResult{RunDir: setup.config.RunDir, SessionDir: setup.config.SessionDir, Environment: setup.config.Environment, OverwriteSessionMemory: setup.config.OverwriteSessionMemory, ReportDir: setup.config.ReportDir}, err
@@ -89,6 +112,38 @@ func executeDiagnosisRun(ctx context.Context, opts diagnoseOptions, runID string
 	memories, err := sessionMemoryHintsForDiagnose(cfg.SessionDir, cfg.SessionID, cfg.Environment, cfg.NewSession, cfg.OverwriteSessionMemory)
 	if err != nil {
 		return diagnoseResult{RunDir: cfg.RunDir, SessionDir: cfg.SessionDir, Environment: cfg.Environment, OverwriteSessionMemory: cfg.OverwriteSessionMemory, ReportDir: cfg.ReportDir}, err
+	}
+
+	taskCtx, cancel := context.WithTimeout(ctx, cfg.TaskTimeout)
+	defer cancel()
+	taskDeadline, _ := taskCtx.Deadline()
+	taskDeadline = taskDeadline.UTC()
+	state := runstore.State{
+		RunID:        runID,
+		SessionID:    cfg.SessionID,
+		Goal:         cfg.Goal,
+		Status:       runstore.StatusRunning,
+		Plan:         existingPlan,
+		Trace:        append([]trace.Entry(nil), existingTrace...),
+		Calls:        append([]runstore.Call(nil), existingCalls...),
+		TaskDeadline: &taskDeadline,
+		CreatedAt:    createdAt,
+		UpdatedAt:    time.Now().UTC(),
+	}
+	result := diagnoseResult{State: state, RunDir: cfg.RunDir, SessionDir: cfg.SessionDir, Environment: cfg.Environment, OverwriteSessionMemory: cfg.OverwriteSessionMemory, ReportDir: cfg.ReportDir}
+	store := runstore.NewStore(cfg.RunDir)
+	if err := store.Save(state); err != nil {
+		return result, fmt.Errorf("checkpoint initial run state: %w", err)
+	}
+	checkpoint := func(snapshot agent.Checkpoint) error {
+		state.Plan = snapshot.Plan
+		state.Trace = snapshot.Trace
+		state.Calls = snapshot.Calls
+		state.Status = runstore.StatusRunning
+		state.Error = ""
+		state.ErrorClass = ""
+		state.UpdatedAt = time.Now().UTC()
+		return store.Save(state)
 	}
 
 	traceStore := trace.NewMemoryStoreWithEntries(existingTrace)
@@ -102,26 +157,24 @@ func executeDiagnosisRun(ctx context.Context, opts diagnoseOptions, runID string
 		TargetContext:    targetContextForDiagnose(cfg),
 		ToolArgOverrides: toolArgOverridesForDiagnose(cfg),
 		Memories:         memories,
+		ExistingCalls:    existingCalls,
+		Checkpoint:       checkpoint,
 	}, setup.provider, setup.registry, policy.NewValidator(policy.Config{
 		ToolAllowlist: cfg.ToolAllowlist,
 		ToolSchemas:   toolSchemasFromRegistry(setup.registry),
 	}), traceStore)
 	runtime.RestorePlan(existingPlan)
 
-	diagnosis, err := runtime.Run(ctx, cfg.Goal)
+	diagnosis, err := runtime.Run(taskCtx, cfg.Goal)
+	state.Plan = runtime.Plan()
+	state.Trace = traceStore.List()
+	state.Calls = runtime.Calls()
+	state.UpdatedAt = time.Now().UTC()
 	if err != nil {
-		state := runstore.State{
-			RunID:     runID,
-			SessionID: cfg.SessionID,
-			Goal:      cfg.Goal,
-			Status:    runstore.StatusFailed,
-			Plan:      runtime.Plan(),
-			Trace:     traceStore.List(),
-			Error:     tools.RedactSensitive(err.Error()),
-			CreatedAt: createdAt,
-			UpdatedAt: time.Now().UTC(),
-		}
-		return diagnoseResult{State: state, RunDir: cfg.RunDir, SessionDir: cfg.SessionDir, Environment: cfg.Environment, OverwriteSessionMemory: cfg.OverwriteSessionMemory, ReportDir: cfg.ReportDir}, err
+		state.Status, state.ErrorClass = terminalRunStatus(taskCtx, err)
+		state.Error = tools.RedactSensitive(err.Error())
+		result.State = state
+		return result, err
 	}
 
 	markdown := report.Markdown(report.Input{
@@ -130,16 +183,23 @@ func executeDiagnosisRun(ctx context.Context, opts diagnoseOptions, runID string
 		Plan:      runtime.Plan(),
 		Trace:     traceStore.List(),
 	})
-	state := runstore.State{
-		RunID:     runID,
-		SessionID: cfg.SessionID,
-		Goal:      cfg.Goal,
-		Status:    runstore.StatusCompleted,
-		Plan:      runtime.Plan(),
-		Diagnosis: diagnosis,
-		Trace:     traceStore.List(),
-		CreatedAt: createdAt,
-		UpdatedAt: time.Now().UTC(),
+	state.Status = runstore.StatusCompleted
+	state.Diagnosis = diagnosis
+	result.Markdown = markdown
+	result.State = state
+	return result, nil
+}
+
+// terminalRunStatus 将执行错误映射为需要持久化的最终状态。
+func terminalRunStatus(ctx context.Context, err error) (runstore.Status, runstore.ErrorClass) {
+	class := agent.ClassifyError(ctx, err)
+	switch class {
+	case runstore.ErrorClassCancelled:
+		return runstore.StatusCancelled, class
+	case runstore.ErrorClassDeadlineExceeded:
+		if ctx.Err() != nil {
+			return runstore.StatusTimedOut, class
+		}
 	}
-	return diagnoseResult{Markdown: markdown, State: state, RunDir: cfg.RunDir, SessionDir: cfg.SessionDir, Environment: cfg.Environment, OverwriteSessionMemory: cfg.OverwriteSessionMemory, ReportDir: cfg.ReportDir}, nil
+	return runstore.StatusFailed, class
 }

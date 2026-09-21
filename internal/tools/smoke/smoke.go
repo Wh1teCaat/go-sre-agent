@@ -1,4 +1,4 @@
-// Package smoke 把被诊断项目自带的端到端冒烟脚本包装成合成事务探针。
+// smoke 包将被诊断项目自带的端到端冒烟脚本包装成合成事务探针。
 //
 // 这是工具集中唯一的非只读探测：冒烟脚本会以测试账号执行真实业务写入
 // （注册/登录/发消息）。因此它不默认存在——只有运营者在配置中显式写出
@@ -43,8 +43,9 @@ func (t *Tool) Spec() tools.ToolSpec {
 		Description: "Run the operator-configured end-to-end smoke test as a synthetic transaction (register/login/send message/push/pull). " +
 			"This performs real writes with a test account. The first FAIL or FATAL assertion name pinpoints the broken stage of the message path; " +
 			"silent push-loss faults (for example Kafka publish degradation) are only detectable this way.",
-		Schema:  tools.ToolSchema{Properties: map[string]tools.ArgSpec{}},
-		Timeout: t.timeout,
+		Schema:     tools.ToolSchema{Properties: map[string]tools.ArgSpec{}},
+		SideEffect: true,
+		Timeout:    t.timeout,
 	}
 }
 

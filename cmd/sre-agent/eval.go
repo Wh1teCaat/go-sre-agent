@@ -40,9 +40,8 @@ type modelEvaluationOptions struct {
 	ExecuteRealModel bool
 }
 
-// runEvalCommand dispatches the offline mock suite and the explicitly gated
-// real-model evaluator. The latter is deliberately not reached by diagnose,
-// normal tests, or a bare `eval model` invocation.
+// runEvalCommand 分派离线 mock 套件与需显式放行的真实模型评测。后者不会由
+// diagnose、普通测试或未带授权参数的 `eval model` 调用触发。
 func runEvalCommand(args []string) {
 	if len(args) == 0 {
 		printUsageAndExit()
@@ -58,8 +57,8 @@ func runEvalCommand(args []string) {
 	}
 }
 
-// runMockEvaluationCommand parses mock-evaluation flags, writes its JSON
-// result to stdout, and reports operational failures on stderr.
+// runMockEvaluationCommand 解析 mock 评测参数，将 JSON 结果写入 stdout，并将
+// 运行错误报告到 stderr。
 func runMockEvaluationCommand(args []string) {
 	fs := flag.NewFlagSet("eval mock", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
@@ -84,8 +83,8 @@ func runMockEvaluationCommand(args []string) {
 	}
 }
 
-// runModelEvaluationCommand parses the explicit real-model gate before
-// delegating evaluation and keeps the machine-readable result on stdout.
+// runModelEvaluationCommand 解析真实模型的显式放行参数后再委派评测，并将机器
+// 可读结果保持在 stdout。
 func runModelEvaluationCommand(args []string) {
 	fs := flag.NewFlagSet("eval model", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
@@ -117,8 +116,8 @@ func runModelEvaluationCommand(args []string) {
 	}
 }
 
-// runMockEvaluations runs only in-process tool fixtures and an in-process mock
-// provider. It intentionally does not load .env or diagnostic configuration.
+// runMockEvaluations 只运行进程内工具样本和进程内 mock provider；它刻意不加载
+// .env 或诊断配置。
 func runMockEvaluations(ctx context.Context, scenarioID, resultsDir string) ([]storedEvaluation, error) {
 	scenarios, err := selectedMockEvaluationScenarios(scenarioID)
 	if err != nil {
@@ -155,8 +154,8 @@ func runMockEvaluations(ctx context.Context, scenarioID, resultsDir string) ([]s
 	return results, nil
 }
 
-// selectedMockEvaluationScenarios resolves "all" or one stable scenario ID
-// into fresh scenario copies for a mock run.
+// selectedMockEvaluationScenarios 将 "all" 或一个稳定场景 ID 解析为供 mock
+// 运行使用的全新场景副本。
 func selectedMockEvaluationScenarios(scenarioID string) ([]evaluation.Scenario, error) {
 	scenarioID = strings.TrimSpace(scenarioID)
 	if scenarioID == "" || scenarioID == "all" {
@@ -169,9 +168,8 @@ func selectedMockEvaluationScenarios(scenarioID string) ([]evaluation.Scenario, 
 	return []evaluation.Scenario{scenario}, nil
 }
 
-// runModelEvaluation always writes a result when its scenario is valid. A bare
-// invocation is recorded as skipped before configuration or model setup is
-// touched, making the cost boundary independently testable.
+// runModelEvaluation 在场景有效时总会写入结果。未带授权参数的调用会在读取配置或
+// 初始化模型前记录为 skipped，使成本边界可独立测试。
 func runModelEvaluation(ctx context.Context, opts modelEvaluationOptions) (storedEvaluation, error) {
 	scenarioID := strings.TrimSpace(opts.Scenario)
 	if scenarioID == "" {
@@ -239,9 +237,8 @@ func runModelEvaluation(ctx context.Context, opts modelEvaluationOptions) (store
 	return saveEvaluationResult(result, opts.ResultsDir)
 }
 
-// runRealModelLoginEvaluation sends requests only to the configured model
-// provider. Diagnostic tools are locked in-process fixtures, so a model cannot
-// turn this evaluation into a scan of localhost or user-configured targets.
+// runRealModelLoginEvaluation 只向已配置模型 provider 发送请求。诊断工具被锁定为
+// 进程内样本，因此模型不能将该评测变成对 localhost 或用户配置目标的扫描。
 func runRealModelLoginEvaluation(ctx context.Context, scenario evaluation.Scenario, configPath string) (diagnoseResult, bool, error) {
 	baseConfig, err := evaluationBaseConfig(configPath)
 	if err != nil {
@@ -293,29 +290,27 @@ func runRealModelLoginEvaluation(ctx context.Context, scenario evaluation.Scenar
 	}}, trackedProvider.called, nil
 }
 
-// modelCallTrackingProvider distinguishes setup failures from an authorized
-// attempt to invoke a real provider. It does not retain prompts or responses.
+// modelCallTrackingProvider 用于区分初始化失败与已授权的真实 provider 调用；
+// 它不保留提示词或响应。
 type modelCallTrackingProvider struct {
 	llm.Provider
 	called bool
 }
 
-// Plan records that the wrapped real provider was invoked, then delegates the
-// plan request without retaining its prompt or response.
+// Plan 记录已调用被包装的真实 provider，再委派规划请求，不保留提示词或响应。
 func (p *modelCallTrackingProvider) Plan(ctx context.Context, request llm.Request) (*schema.Plan, error) {
 	p.called = true
 	return p.Provider.Plan(ctx, request)
 }
 
-// Next records that the wrapped real provider was invoked, then delegates the
-// next-action request without retaining its prompt or response.
+// Next 记录已调用被包装的真实 provider，再委派下一动作请求，不保留提示词或响应。
 func (p *modelCallTrackingProvider) Next(ctx context.Context, request llm.Request) (llm.Decision, error) {
 	p.called = true
 	return p.Provider.Next(ctx, request)
 }
 
-// failedModelEvaluationRun creates an in-memory failed run state without
-// persisting untrusted provider error details as an evaluation artifact.
+// failedModelEvaluationRun 创建内存中的失败运行状态，不会将不可信 provider 错误
+// 细节持久化为评测产物。
 func failedModelEvaluationRun(runID, goal string, startedAt time.Time, plan schema.Plan, entries []trace.Entry, runErr error) (diagnoseResult, error) {
 	state := runstore.State{
 		RunID:     runID,
@@ -335,8 +330,7 @@ type realModelLoginFixture struct {
 	logPath  string
 }
 
-// newRealModelLoginFixture returns the only diagnostic target and log path
-// that an explicitly authorized model evaluation may reference.
+// newRealModelLoginFixture 返回显式授权模型评测唯一可引用的诊断目标和日志路径。
 func newRealModelLoginFixture() realModelLoginFixture {
 	return realModelLoginFixture{
 		loginURL: "https://login.fixture.invalid/v1/user/login",
@@ -344,8 +338,7 @@ func newRealModelLoginFixture() realModelLoginFixture {
 	}
 }
 
-// targetContext gives the model fixed, non-routable fixture metadata instead
-// of operator-configured diagnostic targets.
+// targetContext 向模型提供固定且不可路由的样本元数据，而不是操作者配置的诊断目标。
 func (f realModelLoginFixture) targetContext() map[string]any {
 	return map[string]any{
 		"backend_base_url":  "https://login.fixture.invalid",
@@ -355,8 +348,8 @@ func (f realModelLoginFixture) targetContext() map[string]any {
 	}
 }
 
-// realModelEvaluationRegistry registers only locked in-process tools and the
-// matching policy needed by the login-500 model evaluation.
+// realModelEvaluationRegistry 只注册锁定的进程内工具，以及 login-500 模型评测
+// 所需的匹配 policy。
 func realModelEvaluationRegistry(fixture realModelLoginFixture) (*tools.Registry, *policy.Validator, error) {
 	registry := tools.NewRegistry()
 	fixtures := []evaluationFixtureTool{
@@ -421,13 +414,13 @@ type evaluationFixtureTool struct {
 	observation schema.Observation
 }
 
-// Spec describes the locked fixture tool to the runtime and model provider.
+// Spec 向 runtime 和模型 provider 描述锁定的样本工具。
 func (t *evaluationFixtureTool) Spec() tools.ToolSpec {
 	return tools.ToolSpec{Name: t.name, Description: t.description, Schema: t.schema}
 }
 
-// Run validates fixture arguments and returns a copied fixed observation; it
-// never performs the network or file operation represented by the tool name.
+// Run 校验样本参数并返回固定 observation 的副本；它绝不执行工具名所代表的网络或
+// 文件操作。
 func (t *evaluationFixtureTool) Run(ctx context.Context, rawArgs json.RawMessage) (schema.Observation, error) {
 	if err := ctx.Err(); err != nil {
 		return schema.Observation{Tool: t.name}, err
@@ -449,8 +442,8 @@ func (t *evaluationFixtureTool) Run(ctx context.Context, rawArgs json.RawMessage
 	return observation, nil
 }
 
-// evaluationBaseConfig loads only the agent settings needed by the model
-// evaluator, falling back to safe built-in defaults when no path is set.
+// evaluationBaseConfig 只加载模型评测所需的 agent 设置；未指定路径时回退到安全的
+// 内置默认值。
 func evaluationBaseConfig(configPath string) (appconfig.Config, error) {
 	if strings.TrimSpace(configPath) == "" {
 		return appconfig.Default(), nil
@@ -458,13 +451,12 @@ func evaluationBaseConfig(configPath string) (appconfig.Config, error) {
 	return appconfig.Load(configPath)
 }
 
-// failAndSaveModelEvaluation records a sanitized failed result and returns a
-// stable command error without exposing provider response details.
+// failAndSaveModelEvaluation 记录脱敏后的失败结果，并返回稳定的命令错误，不暴露
+// provider 响应细节。
 func failAndSaveModelEvaluation(result evaluation.Result, resultsDir string, err error) (storedEvaluation, error) {
 	result.Status = evaluation.StatusFailed
-	// Provider failures may include an untrusted response body. Do not persist
-	// or echo it from this command; detailed provider diagnostics stay outside
-	// evaluation records so an echoed credential cannot become an artifact.
+	// Provider 失败可能包含不可信响应体。此命令不得持久化或回显它；详细 provider
+	// 诊断信息应留在评测记录之外，避免回显的凭据成为产物。
 	result.Error = "real model evaluation failed before completion; provider details were not persisted"
 	finishEvaluationResult(&result)
 	stored, saveErr := saveEvaluationResult(result, resultsDir)
@@ -474,8 +466,7 @@ func failAndSaveModelEvaluation(result evaluation.Result, resultsDir string, err
 	return stored, fmt.Errorf("model evaluation failed: %s", result.Error)
 }
 
-// failedEvaluationResult creates a persistable failure when a mock runner
-// cannot return its own result record.
+// failedEvaluationResult 在 mock runner 无法返回自身结果记录时创建可持久化失败结果。
 func failedEvaluationResult(scenario evaluation.Scenario, mode evaluation.Mode, command string, err error) evaluation.Result {
 	startedAt := time.Now().UTC()
 	result := evaluation.Result{
@@ -495,8 +486,7 @@ func failedEvaluationResult(scenario evaluation.Scenario, mode evaluation.Mode, 
 	return result
 }
 
-// saveEvaluationResult persists a result and changes its visible status to
-// failed when persistence itself was unsuccessful.
+// saveEvaluationResult 持久化结果；持久化自身失败时会将可见状态改为 failed。
 func saveEvaluationResult(result evaluation.Result, resultsDir string) (storedEvaluation, error) {
 	path, err := evaluation.NewStore(evaluationResultsDir(resultsDir)).Save(result)
 	if err != nil {
@@ -507,15 +497,13 @@ func saveEvaluationResult(result evaluation.Result, resultsDir string) (storedEv
 	return storedEvaluation{ResultPath: path, Result: result}, err
 }
 
-// finishEvaluationResult sets completion time and the non-negative duration
-// for a command-owned evaluation result.
+// finishEvaluationResult 为命令持有的评测结果设置完成时间和非负耗时。
 func finishEvaluationResult(result *evaluation.Result) {
 	result.FinishedAt = time.Now().UTC()
 	result.DurationMS = result.FinishedAt.Sub(result.StartedAt).Milliseconds()
 }
 
-// evaluationResultsDir returns the conventional ignored directory when the
-// caller did not provide a result destination.
+// evaluationResultsDir 在调用方未提供结果目录时返回约定的、被 Git 忽略的目录。
 func evaluationResultsDir(dir string) string {
 	if strings.TrimSpace(dir) == "" {
 		return defaultEvaluationResultsDir
@@ -523,8 +511,7 @@ func evaluationResultsDir(dir string) string {
 	return dir
 }
 
-// rejectUnexpectedEvalArgs prevents positional values from silently changing
-// the meaning of boolean evaluation flags.
+// rejectUnexpectedEvalArgs 防止位置参数静默改变布尔评测参数的含义。
 func rejectUnexpectedEvalArgs(fs *flag.FlagSet) error {
 	if fs.NArg() == 0 {
 		return nil
@@ -532,8 +519,8 @@ func rejectUnexpectedEvalArgs(fs *flag.FlagSet) error {
 	return fmt.Errorf("unexpected positional arguments: %s", strings.Join(fs.Args(), " "))
 }
 
-// outputEvaluationResults emits one JSON document and derives its overall
-// status from the individual persisted or attempted results.
+// outputEvaluationResults 输出一个 JSON 文档，并从各已持久化或已尝试的结果推导
+// 总体状态。
 func outputEvaluationResults(writer *os.File, mode evaluation.Mode, results []storedEvaluation) {
 	status := evaluation.StatusPassed
 	for _, result := range results {
@@ -552,7 +539,7 @@ func outputEvaluationResults(writer *os.File, mode evaluation.Mode, results []st
 	}
 }
 
-// uniqueStrings preserves first-seen failure messages while removing repeats.
+// uniqueStrings 保留首次出现的失败消息，同时移除重复项。
 func uniqueStrings(values []string) []string {
 	seen := make(map[string]struct{}, len(values))
 	unique := make([]string, 0, len(values))

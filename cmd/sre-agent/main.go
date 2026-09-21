@@ -31,10 +31,10 @@ func main() {
 // printUsageAndExit 输出 CLI 用法并以参数错误状态退出。
 // 参数: 无；返回: 无，函数固定以退出码 2 终止进程。
 func printUsageAndExit() {
-	fmt.Fprintln(os.Stderr, "usage: sre-agent diagnose --goal <goal> [--session-id <session_id>] [--session-dir .sessions] [--environment local] [--overwrite-session-memory] [--config config.yaml] [--mock-scenario login-500] [--out report.md]")
+	fmt.Fprintln(os.Stderr, "usage: sre-agent diagnose --goal <goal> [--task-timeout 5m] [--session-id <session_id>] [--session-dir .sessions] [--environment local] [--overwrite-session-memory] [--config config.yaml] [--mock-scenario login-500] [--out report.md]")
 	fmt.Fprintln(os.Stderr, "       sre-agent eval mock [--scenario all] [--results-dir evals/results]")
 	fmt.Fprintln(os.Stderr, "       sre-agent eval model [--scenario login-500] [--config config.yaml] [--results-dir evals/results] [--execute-real-model]")
-	fmt.Fprintln(os.Stderr, "       sre-agent resume --run-id <run_id> [--session-dir .sessions] [--environment local] [--overwrite-session-memory] [--config config.yaml]")
+	fmt.Fprintln(os.Stderr, "       sre-agent resume --run-id <run_id> [--task-timeout 5m] [--resume-running] [--session-dir .sessions] [--environment local] [--overwrite-session-memory] [--config config.yaml]")
 	fmt.Fprintln(os.Stderr, "       sre-agent status --run-id <run_id> [--config config.yaml]")
 	fmt.Fprintln(os.Stderr, "       sre-agent report --run-id <run_id> [--config config.yaml]")
 	fmt.Fprintln(os.Stderr, "       sre-agent llm ping")

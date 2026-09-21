@@ -16,12 +16,9 @@ import (
 	"github.com/y2/go-sre-agent/internal/trace"
 )
 
-// RunMock evaluates one fixed scenario with an in-process MockProvider and
-// ToolFixture implementations. It never reads LLM configuration and never
-// opens a network connection. A failed expectation is represented by a failed
-// Result with a nil error; a non-nil error means the runner could not execute
-// the scenario at all. In both cases the returned Result is suitable for
-// persistence.
+// RunMock 使用进程内 MockProvider 和 ToolFixture 实现评测一个固定场景。它绝不
+// 读取 LLM 配置或建立网络连接。预期未通过会以 error 为 nil 的失败 Result 表示；
+// 非 nil error 表示 runner 完全无法执行场景。两种情况返回的 Result 都可持久化。
 func RunMock(ctx context.Context, scenario Scenario) (Result, error) {
 	if ctx == nil {
 		ctx = context.Background()
@@ -70,9 +67,8 @@ func RunMock(ctx context.Context, scenario Scenario) (Result, error) {
 	return finishResult(result), nil
 }
 
-// EvaluateScenario applies a scenario's portable expectations to a diagnosis
-// and trace. It is intentionally independent of RunMock so an explicit
-// real-model evaluator can use exactly the same acceptance criteria.
+// EvaluateScenario 将场景中可移植的预期应用于 diagnosis 与 trace。它刻意独立于
+// RunMock，使显式真实模型评测可以使用完全相同的验收标准。
 func EvaluateScenario(scenario Scenario, diagnosis *schema.Diagnosis, entries []trace.Entry) []Assertion {
 	assertions := make([]Assertion, 0, 2+len(scenario.Expectations.ToolNames)+len(scenario.Expectations.SummaryContains))
 	assertions = append(assertions, Assertion{
@@ -118,8 +114,8 @@ func EvaluateScenario(scenario Scenario, diagnosis *schema.Diagnosis, entries []
 	return assertions
 }
 
-// containsToolSequence reports whether expected appears in observed while
-// preserving the expected tool order and allowing unrelated trace entries.
+// containsToolSequence 判断 expected 是否按顺序出现于 observed，并允许无关的
+// trace 条目。
 func containsToolSequence(observed, expected []string) bool {
 	if len(expected) == 0 {
 		return true
@@ -136,8 +132,8 @@ func containsToolSequence(observed, expected []string) bool {
 	return false
 }
 
-// AllPassed reports whether every assertion passed. It is useful to callers
-// that persist a Result and decide their own process exit status.
+// AllPassed 判断每条 assertion 是否都已通过，供持久化 Result 并自行决定进程退出
+// 状态的调用方使用。
 func AllPassed(assertions []Assertion) bool {
 	for _, assertion := range assertions {
 		if !assertion.Passed {
@@ -147,8 +143,7 @@ func AllPassed(assertions []Assertion) bool {
 	return true
 }
 
-// assertionDetail omits detail for a passing assertion and keeps only the
-// concise failure reason for a failed assertion.
+// assertionDetail 为通过的 assertion 省略详情，只保留失败 assertion 的简明原因。
 func assertionDetail(passed bool, failure string) string {
 	if passed {
 		return ""
@@ -156,8 +151,8 @@ func assertionDetail(passed bool, failure string) string {
 	return failure
 }
 
-// finishFailedMockResult finalizes a redacted runner failure so it remains
-// safe to persist alongside successfully executed scenarios.
+// finishFailedMockResult 完成一个已脱敏的 runner 失败结果，使其可安全地与成功执行
+// 的场景一同持久化。
 func finishFailedMockResult(result Result, runErr error) (Result, error) {
 	result.Status = StatusFailed
 	result.Error = tools.RedactSensitive(runErr.Error())
@@ -165,7 +160,7 @@ func finishFailedMockResult(result Result, runErr error) (Result, error) {
 	return result, fmt.Errorf("run mock scenario %q: %s", result.ScenarioID, result.Error)
 }
 
-// finishResult stamps a result with a non-negative elapsed duration.
+// finishResult 为结果写入非负的耗时。
 func finishResult(result Result) Result {
 	finishedAt := time.Now().UTC()
 	result.FinishedAt = finishedAt
@@ -176,8 +171,7 @@ func finishResult(result Result) Result {
 	return result
 }
 
-// validateScenario checks the invariant required to run a deterministic
-// scenario without resolving real tools or targets.
+// validateScenario 校验运行确定性场景所需的不变量，且不解析真实工具或目标。
 func validateScenario(scenario Scenario) error {
 	if strings.TrimSpace(scenario.ID) == "" {
 		return errors.New("scenario id is required")
@@ -217,8 +211,7 @@ func validateScenario(scenario Scenario) error {
 	return nil
 }
 
-// mockRegistryAndValidator constructs an isolated registry and allowlist from
-// one scenario's in-memory tool fixtures.
+// mockRegistryAndValidator 从一个场景的内存工具样本构建隔离的 registry 与 allowlist。
 func mockRegistryAndValidator(scenario Scenario) (*tools.Registry, *policy.Validator, error) {
 	registry := tools.NewRegistry()
 	allowlist := make([]string, 0, len(scenario.Tools))
@@ -241,7 +234,7 @@ type fixtureTool struct {
 	fixture ToolFixture
 }
 
-// Spec describes the immutable mock fixture to the runtime.
+// Spec 向 runtime 描述不可变的 mock 样本。
 func (t *fixtureTool) Spec() tools.ToolSpec {
 	return tools.ToolSpec{
 		Name:        t.fixture.Name,
@@ -250,8 +243,7 @@ func (t *fixtureTool) Spec() tools.ToolSpec {
 	}
 }
 
-// Run returns the fixture's copied observation or configured error without
-// making a network, file-system, or subprocess call.
+// Run 返回样本 observation 的副本或已配置错误，不发起网络、文件系统或子进程调用。
 func (t *fixtureTool) Run(ctx context.Context, _ json.RawMessage) (schema.Observation, error) {
 	if err := ctx.Err(); err != nil {
 		return schema.Observation{Tool: t.fixture.Name}, err
@@ -266,8 +258,8 @@ func (t *fixtureTool) Run(ctx context.Context, _ json.RawMessage) (schema.Observ
 	return observation, nil
 }
 
-// cloneToolFixture copies the mutable schema and observation owned by a mock
-// fixture before it enters a runtime registry.
+// cloneToolFixture 在 mock 样本进入 runtime registry 前复制其可变的 schema 与
+// observation。
 func cloneToolFixture(input ToolFixture) ToolFixture {
 	output := input
 	output.Schema = cloneToolSchema(input.Schema)

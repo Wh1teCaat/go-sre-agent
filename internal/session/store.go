@@ -1,5 +1,5 @@
-// Package session persists the lightweight state and Markdown memory that
-// connect multiple diagnostic runs for one investigation.
+// session 包持久化将同一排障问题的多个诊断 run 串联起来的轻量状态和 Markdown
+// 记忆。
 package session
 
 import (
@@ -17,7 +17,7 @@ import (
 	"github.com/y2/go-sre-agent/internal/tools"
 )
 
-// DefaultDir is the conventional root for generated per-session state.
+// DefaultDir 是生成的每会话状态约定根目录。
 const DefaultDir = ".sessions"
 
 const (
@@ -25,9 +25,8 @@ const (
 	sessionMemoryFile = "memory.md"
 )
 
-// State identifies one investigation and the runs that belong to it. Goal and
-// Environment describe the original session scope; individual run goals stay
-// in their respective run records.
+// State 标识一个排障问题及其所属 run。Goal 和 Environment 描述原始会话范围；每个
+// run 的目标保存在其各自记录中。
 type State struct {
 	SessionID    string    `json:"session_id"`
 	Goal         string    `json:"goal"`
@@ -38,13 +37,12 @@ type State struct {
 	UpdatedAt    time.Time `json:"updated_at"`
 }
 
-// Store owns one session-root directory and stores every session in a distinct
-// directory below it.
+// Store 管理一个会话根目录，并在其下的独立目录中保存每个会话。
 type Store struct {
 	dir string
 }
 
-// NewStore creates a store rooted at dir. An empty directory uses .sessions.
+// NewStore 创建以 dir 为根目录的存储；空目录使用 .sessions。
 func NewStore(dir string) *Store {
 	if strings.TrimSpace(dir) == "" {
 		dir = DefaultDir
@@ -52,8 +50,7 @@ func NewStore(dir string) *Store {
 	return &Store{dir: dir}
 }
 
-// NewID creates a filesystem-safe session identifier with a timestamp prefix
-// and a random suffix.
+// NewID 创建带时间戳前缀和随机后缀的文件系统安全会话标识。
 func NewID(now time.Time) string {
 	if now.IsZero() {
 		now = time.Now()
@@ -62,7 +59,7 @@ func NewID(now time.Time) string {
 	return fmt.Sprintf("session_%s_%09d_%s", now.Format("20060102_150405"), now.Nanosecond(), randomIDSuffix())
 }
 
-// Save atomically replaces session.json with a redacted, validated state.
+// Save 使用已脱敏、已校验的状态原子替换 session.json。
 func (s *Store) Save(state State) error {
 	if s == nil {
 		return fmt.Errorf("session store is nil")
@@ -85,7 +82,7 @@ func (s *Store) Save(state State) error {
 	return nil
 }
 
-// Load reads and validates session.json for a safe session ID.
+// Load 按安全会话 ID 读取并校验 session.json。
 func (s *Store) Load(sessionID string) (State, error) {
 	if s == nil {
 		return State{}, fmt.Errorf("session store is nil")
@@ -111,8 +108,8 @@ func (s *Store) Load(sessionID string) (State, error) {
 	return state, nil
 }
 
-// SaveMemory atomically replaces the generated Markdown memory for sessionID.
-// Content is redacted again at the persistence boundary.
+// SaveMemory 原子替换 sessionID 对应的生成 Markdown 记忆；内容会在持久化边界再次
+// 脱敏。
 func (s *Store) SaveMemory(sessionID, content string) error {
 	if s == nil {
 		return fmt.Errorf("session store is nil")
@@ -127,16 +124,15 @@ func (s *Store) SaveMemory(sessionID, content string) error {
 	return nil
 }
 
-// MemoryDigest returns the digest of exactly the redacted Markdown that
-// SaveMemory writes. Session updates use it to refuse silent overwrite of a
-// manually changed generated memory file.
+// MemoryDigest 返回 SaveMemory 实际写入的脱敏 Markdown 摘要；会话更新使用它拒绝
+// 静默覆盖被人工修改的生成记忆文件。
 func MemoryDigest(content string) string {
 	sum := sha256.Sum256([]byte(redactedMemory(content)))
 	return hex.EncodeToString(sum[:])
 }
 
-// LoadMemory returns an empty string when the generated Markdown file is not
-// present, allowing a valid session to recover on its next completed run.
+// LoadMemory 在生成 Markdown 文件不存在时返回空字符串，使有效会话可在下一次完成的
+// run 时恢复。
 func (s *Store) LoadMemory(sessionID string) (string, error) {
 	if s == nil {
 		return "", fmt.Errorf("session store is nil")
@@ -155,8 +151,7 @@ func (s *Store) LoadMemory(sessionID string) (string, error) {
 	return string(data), nil
 }
 
-// randomIDSuffix uses cryptographic randomness when available and falls back
-// to a timestamp representation only to preserve practical uniqueness.
+// randomIDSuffix 优先使用密码学随机数；不可用时仅为保持实际唯一性而回退到时间戳表示。
 func randomIDSuffix() string {
 	var bytes [8]byte
 	if _, err := rand.Read(bytes[:]); err == nil {
@@ -165,8 +160,7 @@ func randomIDSuffix() string {
 	return strconv.FormatInt(time.Now().UnixNano(), 36)
 }
 
-// statePath derives the session.json path while preventing a session ID from
-// escaping the store root.
+// statePath 推导 session.json 路径，同时防止 session ID 逃逸出存储根目录。
 func (s *Store) statePath(sessionID string) (string, error) {
 	dir, err := s.sessionDir(sessionID)
 	if err != nil {
@@ -175,8 +169,7 @@ func (s *Store) statePath(sessionID string) (string, error) {
 	return filepath.Join(dir, sessionStateFile), nil
 }
 
-// memoryPath derives the memory.md path while preventing a session ID from
-// escaping the store root.
+// memoryPath 推导 memory.md 路径，同时防止 session ID 逃逸出存储根目录。
 func (s *Store) memoryPath(sessionID string) (string, error) {
 	dir, err := s.sessionDir(sessionID)
 	if err != nil {
@@ -185,8 +178,7 @@ func (s *Store) memoryPath(sessionID string) (string, error) {
 	return filepath.Join(dir, sessionMemoryFile), nil
 }
 
-// sessionDir validates a flat identifier before appending it to the configured
-// root directory.
+// sessionDir 在将扁平标识追加到配置根目录前校验它。
 func (s *Store) sessionDir(sessionID string) (string, error) {
 	if !safeID(sessionID) {
 		return "", fmt.Errorf("unsafe session id %q", sessionID)
@@ -194,7 +186,7 @@ func (s *Store) sessionDir(sessionID string) (string, error) {
 	return filepath.Join(s.dir, sessionID), nil
 }
 
-// safeID accepts only flat filesystem-safe session identifiers.
+// safeID 只接受扁平且文件系统安全的会话标识。
 func safeID(sessionID string) bool {
 	if strings.TrimSpace(sessionID) == "" || sessionID != filepath.Base(sessionID) {
 		return false
@@ -208,7 +200,7 @@ func safeID(sessionID string) bool {
 	return true
 }
 
-// validateState rejects incomplete session metadata and unsafe run references.
+// validateState 拒绝不完整的会话元数据和不安全的 run 引用。
 func validateState(state State) error {
 	if !safeID(state.SessionID) {
 		return fmt.Errorf("unsafe session id %q", state.SessionID)
@@ -241,8 +233,7 @@ func validateState(state State) error {
 	return nil
 }
 
-// safeRunID accepts the same flat identifier shape used by the run store,
-// without importing that package's unexported validation helper.
+// safeRunID 接受与 run store 相同的扁平标识形状，但不导入该包未导出的校验辅助函数。
 func safeRunID(runID string) bool {
 	if strings.TrimSpace(runID) == "" || runID != filepath.Base(runID) {
 		return false
@@ -256,22 +247,19 @@ func safeRunID(runID string) bool {
 	return true
 }
 
-// redactState removes common credential forms before session metadata reaches
-// disk, even when the caller accidentally passes an unredacted goal or label.
+// redactState 在会话元数据落盘前移除常见凭据形式，即使调用方意外传入未脱敏目标或标签。
 func redactState(state State) State {
 	state.Goal = tools.RedactSensitive(state.Goal)
 	state.Environment = tools.RedactSensitive(state.Environment)
 	return state
 }
 
-// redactedMemory applies the same persistence-boundary redaction used by the
-// digest so stored content and its recorded checksum always agree.
+// redactedMemory 应用与摘要相同的持久化边界脱敏，使存储内容与记录的校验和始终一致。
 func redactedMemory(content string) string {
 	return tools.RedactSensitive(content)
 }
 
-// writeAtomic writes one private session file through a synced temporary file
-// and then replaces the destination in the same directory.
+// writeAtomic 通过已同步的临时文件写入一个私有会话文件，再在同目录替换目标文件。
 func writeAtomic(path string, data []byte) error {
 	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, 0o700); err != nil {

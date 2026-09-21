@@ -5,8 +5,10 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"strings"
+	"syscall"
 )
 
 // runDiagnoseCommand 解析 diagnose 参数并执行新诊断。
@@ -19,6 +21,7 @@ func runDiagnoseCommand(args []string) {
 	maxSteps := fs.Int("max-steps", 0, "maximum agent steps")
 	llmTimeout := fs.Duration("llm-timeout", 0, "LLM request timeout")
 	toolTimeout := fs.Duration("tool-timeout", 0, "tool execution timeout")
+	taskTimeout := fs.Duration("task-timeout", 0, "whole diagnostic task timeout")
 	runDir := fs.String("run-dir", "", "override run state directory")
 	sessionID := fs.String("session-id", "", "continue an existing diagnostic session")
 	sessionDir := fs.String("session-dir", "", "override session state directory")
@@ -36,12 +39,15 @@ func runDiagnoseCommand(args []string) {
 	}
 
 	// CLI 层只做参数收集和退出码处理。
-	result, err := startDiagnosisRun(context.Background(), diagnoseOptions{
+	ctx, stop := commandContext()
+	defer stop()
+	result, err := startDiagnosisRun(ctx, diagnoseOptions{
 		Goal:                   *goal,
 		ConfigPath:             *configPath,
 		MaxSteps:               *maxSteps,
 		LLMTimeout:             *llmTimeout,
 		ToolTimeout:            *toolTimeout,
+		TaskTimeout:            *taskTimeout,
 		RunDir:                 *runDir,
 		SessionID:              *sessionID,
 		SessionDir:             *sessionDir,
@@ -75,6 +81,8 @@ func runResumeCommand(args []string) {
 	maxSteps := fs.Int("max-steps", 0, "maximum total agent steps")
 	llmTimeout := fs.Duration("llm-timeout", 0, "LLM request timeout")
 	toolTimeout := fs.Duration("tool-timeout", 0, "tool execution timeout")
+	taskTimeout := fs.Duration("task-timeout", 0, "whole diagnostic task timeout")
+	resumeRunning := fs.Bool("resume-running", false, "confirm recovery of a run still marked running")
 	runDir := fs.String("run-dir", "", "override run state directory")
 	sessionDir := fs.String("session-dir", "", "override session state directory")
 	environment := fs.String("environment", "", "session environment label")
@@ -85,7 +93,9 @@ func runResumeCommand(args []string) {
 		os.Exit(2)
 	}
 
-	result, err := resumeDiagnosisRun(context.Background(), resumeOptions{
+	ctx, stop := commandContext()
+	defer stop()
+	result, err := resumeDiagnosisRun(ctx, resumeOptions{
 		RunID:                  *runID,
 		RunDir:                 *runDir,
 		SessionDir:             *sessionDir,
@@ -95,6 +105,8 @@ func runResumeCommand(args []string) {
 		MaxSteps:               *maxSteps,
 		LLMTimeout:             *llmTimeout,
 		ToolTimeout:            *toolTimeout,
+		TaskTimeout:            *taskTimeout,
+		ResumeRunning:          *resumeRunning,
 	}, *mockScenario)
 	if err := saveDiagnosisResult(result, err); err != nil {
 		fmt.Fprintln(os.Stderr, err)
@@ -110,6 +122,12 @@ func runResumeCommand(args []string) {
 		os.Exit(1)
 	}
 	fmt.Print(markdown)
+}
+
+// commandContext 返回会被 Ctrl-C 或 SIGTERM 取消的上下文。调用方应在持久化
+// 最终 checkpoint 后调用 stop。
+func commandContext() (context.Context, context.CancelFunc) {
+	return signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 }
 
 // runStatusCommand 输出指定 run 的当前状态。

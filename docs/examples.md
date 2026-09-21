@@ -43,6 +43,30 @@ sre-agent diagnose \
 
 后续真实诊断流程会在第一轮证据之后，让模型按需要继续调用 `postgres_ping` 和 `redis_ping`。
 
+## 取消与恢复
+
+诊断运行时按一次 Ctrl-C 会取消当前 context，并把已完成和正在执行的调用状态保存到
+`.runs/<run_id>.json`。stderr 中输出的 `run_id` 可用于查看状态：
+
+```bash
+sre-agent status --run-id <run_id>
+```
+
+对于 `cancelled`、`timed_out` 或 `failed` 的 run，可以恢复同一个 run：
+
+```bash
+sre-agent resume --run-id <run_id> --task-timeout 2m
+```
+
+若 run 仍为 `running`，先确认原进程已经停止，再明确确认恢复：
+
+```bash
+sre-agent resume --run-id <run_id> --resume-running
+```
+
+未知结果的 `smoke_run` 不允许自动恢复，因为该合成事务可能已经产生写入；详见
+[运行恢复说明](run-recovery.md)。
+
 ## 依赖连通性检查
 
 ```bash

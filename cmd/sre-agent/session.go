@@ -14,9 +14,8 @@ import (
 	"github.com/y2/go-sre-agent/internal/trace"
 )
 
-// prepareNewDiagnosisSession resolves session settings before a fresh run. A
-// supplied session ID must already exist, while an omitted ID creates a new
-// session identity that is persisted only after the run state is saved.
+// prepareNewDiagnosisSession 在新运行前解析会话设置。传入的 session ID 必须已
+// 存在；省略时会生成新的会话标识，且仅在运行状态保存后才会持久化。
 func prepareNewDiagnosisSession(opts diagnoseOptions, startedAt time.Time) (diagnoseOptions, error) {
 	resolved, err := resolveDiagnosisConfig(opts)
 	if err != nil {
@@ -42,11 +41,10 @@ func prepareNewDiagnosisSession(opts diagnoseOptions, startedAt time.Time) (diag
 	return opts, nil
 }
 
-// sessionMemoryHintsForDiagnose loads only the selected session's generated
-// Markdown record. The prompt explicitly scopes it as historical reference so
-// persisted text cannot replace runtime rules or current-run evidence. A
-// changed generated file is never injected unless explicit overwrite was set;
-// that recovery path skips the changed content and rebuilds it after the run.
+// sessionMemoryHintsForDiagnose 只加载选定会话生成的 Markdown 记录。提示词会
+// 明确将其限定为历史参考，避免持久化文本替代 runtime 规则或本次运行证据。除非
+// 显式允许覆盖，否则已修改的生成文件绝不注入；覆盖路径会跳过修改后的内容，并在
+// 运行结束后重建文件。
 func sessionMemoryHintsForDiagnose(sessionDir, sessionID, environment string, allowMissingSession, overwriteModifiedMemory bool) ([]schema.Memory, error) {
 	if strings.TrimSpace(sessionID) == "" {
 		return nil, nil
@@ -86,9 +84,8 @@ func sessionMemoryHintsForDiagnose(sessionDir, sessionID, environment string, al
 	}}, nil
 }
 
-// updateSessionForRun adds a saved run to its session, then deterministically
-// rebuilds memory.md from the persisted run facts. Legacy runs without a
-// session ID intentionally remain usable without creating session files.
+// updateSessionForRun 将已保存的 run 加入会话，再根据持久化的运行事实确定性重建
+// memory.md。没有 session ID 的旧 run 仍可使用，且不会创建会话文件。
 func updateSessionForRun(result diagnoseResult) error {
 	if strings.TrimSpace(result.State.SessionID) == "" {
 		return nil
@@ -139,8 +136,8 @@ func updateSessionForRun(result diagnoseResult) error {
 	return nil
 }
 
-// appendSessionRunID preserves the session's chronological run order while
-// making retries and resume saves idempotent for the same run ID.
+// appendSessionRunID 保持会话内 run 的时间顺序，并使同一 run ID 的重试和恢复保存
+// 保持幂等。
 func appendSessionRunID(runIDs []string, runID string) []string {
 	for _, existing := range runIDs {
 		if existing == runID {
@@ -150,8 +147,8 @@ func appendSessionRunID(runIDs []string, runID string) []string {
 	return append(runIDs, runID)
 }
 
-// loadSessionRuns reloads the fact source for every listed run. A missing old
-// run is skipped here; its reference remains in session.json for traceability.
+// loadSessionRuns 重新加载每个列出 run 的事实来源。缺失的旧 run 会被跳过，但其
+// 引用仍保留在 session.json 中以便追溯。
 func loadSessionRuns(runDir string, runIDs []string) []runstore.State {
 	store := runstore.NewStore(runDir)
 	runs := make([]runstore.State, 0, len(runIDs))
@@ -164,9 +161,8 @@ func loadSessionRuns(runDir string, runIDs []string) []runstore.State {
 	return runs
 }
 
-// renderSessionMemory creates a deterministic, source-linked Markdown record
-// from persisted run snapshots. It deliberately records conclusion strength
-// without upgrading a missing or uncertain root-cause declaration.
+// renderSessionMemory 从持久化运行快照生成确定性且带来源链接的 Markdown 记录；
+// 它会保留结论强度，绝不升级缺失或不确定的根因声明。
 func renderSessionMemory(state sessionstore.State, runs []runstore.State) string {
 	var content strings.Builder
 	content.WriteString("# Session Memory\n\n")
@@ -186,7 +182,7 @@ func renderSessionMemory(state sessionstore.State, runs []runstore.State) string
 				continue
 			}
 			observations++
-			fmt.Fprintf(&content, "- Run `%s` / trace step `%d` / tool `%s`: %s\n", run.RunID, entry.Step, entry.ToolName, sessionMemoryText(observationSummary(entry)))
+			fmt.Fprintf(&content, "- Run `%s` / trace step `%d` / tool `%s` / %s: %s\n", run.RunID, entry.Step, entry.ToolName, sessionCallReference(entry), sessionMemoryText(observationSummary(entry)))
 		}
 	}
 	if observations == 0 {
@@ -237,28 +233,38 @@ func renderSessionMemory(state sessionstore.State, runs []runstore.State) string
 	sourceEntries := 0
 	for _, run := range runs {
 		if len(run.Trace) == 0 {
-			fmt.Fprintf(&content, "- Run `%s`; no trace step recorded. Call IDs are unavailable until phase 2.\n", run.RunID)
+			fmt.Fprintf(&content, "- Run `%s`; no trace step recorded; call IDs are not recorded.\n", run.RunID)
 			sourceEntries++
 			continue
 		}
 		for _, entry := range run.Trace {
-			if strings.TrimSpace(entry.ToolName) == "" {
-				continue
+			if strings.TrimSpace(entry.ToolName) != "" {
+				fmt.Fprintf(&content, "- Run `%s` / trace step `%d` / tool `%s` / %s.\n", run.RunID, entry.Step, entry.ToolName, sessionCallReference(entry))
+			} else {
+				fmt.Fprintf(&content, "- Run `%s` / trace step `%d` / action `%s` / %s.\n", run.RunID, entry.Step, entry.ActionType, sessionCallReference(entry))
 			}
-			fmt.Fprintf(&content, "- Run `%s` / trace step `%d` / tool `%s`; call ID is unavailable until phase 2.\n", run.RunID, entry.Step, entry.ToolName)
 			sourceEntries++
 		}
 	}
 	if len(runs) > 0 && sourceEntries == 0 {
 		for _, run := range runs {
-			fmt.Fprintf(&content, "- Run `%s`; no tool trace source recorded. Call IDs are unavailable until phase 2.\n", run.RunID)
+			fmt.Fprintf(&content, "- Run `%s`; no trace source recorded; call IDs are not recorded.\n", run.RunID)
 		}
 	}
 	return content.String()
 }
 
-// observationSummary chooses the persisted observation summary or tool error
-// for a Markdown memory line without reproducing raw tool data.
+// sessionCallReference 渲染可选的阶段二 call 链接；没有调用 checkpoint 的旧 run
+// 会保留准确标记。
+func sessionCallReference(entry trace.Entry) string {
+	if strings.TrimSpace(entry.CallID) == "" {
+		return "call ID `not recorded (legacy run)`"
+	}
+	return "call ID `" + entry.CallID + "`"
+}
+
+// observationSummary 为 Markdown 记忆行选择持久化的 observation 摘要或工具错误，
+// 不复制原始工具数据。
 func observationSummary(entry trace.Entry) string {
 	if strings.TrimSpace(entry.Result.Summary) != "" {
 		return entry.Result.Summary
@@ -269,8 +275,7 @@ func observationSummary(entry trace.Entry) string {
 	return "no summary recorded"
 }
 
-// conclusionStatus preserves the source declaration verbatim except for a
-// missing value, which is explicitly represented as not_recorded.
+// conclusionStatus 原样保留来源声明；缺失值会明确表示为 not_recorded。
 func conclusionStatus(diagnosis *schema.Diagnosis) string {
 	if diagnosis == nil || diagnosis.RootCause == nil || strings.TrimSpace(diagnosis.RootCause.Status) == "" {
 		return "not_recorded"
@@ -278,8 +283,7 @@ func conclusionStatus(diagnosis *schema.Diagnosis) string {
 	return strings.TrimSpace(diagnosis.RootCause.Status)
 }
 
-// latestRecommendation finds the newest persisted recommendation without
-// interpreting or strengthening it.
+// latestRecommendation 查找最新的持久化建议，不解释或强化其含义。
 func latestRecommendation(runs []runstore.State) (string, bool) {
 	for index := len(runs) - 1; index >= 0; index-- {
 		diagnosis := runs[index].Diagnosis
@@ -295,8 +299,7 @@ func latestRecommendation(runs []runstore.State) (string, bool) {
 	return "", false
 }
 
-// sessionMemoryText redacts and normalizes one untrusted persisted value before
-// embedding it as a Markdown list item.
+// sessionMemoryText 将单个不可信持久化值脱敏、规范化后再嵌入 Markdown 列表项。
 func sessionMemoryText(value string) string {
 	value = strings.Join(strings.Fields(tools.RedactSensitive(value)), " ")
 	if value == "" {

@@ -8,16 +8,15 @@ import (
 )
 
 const (
-	// ScenarioSkeleton validates the smallest final-diagnosis path.
+	// ScenarioSkeleton 校验最小 final-diagnosis 路径。
 	ScenarioSkeleton = "skeleton"
-	// ScenarioLogin500 validates a fixed HTTP-plus-log evidence sequence.
+	// ScenarioLogin500 校验固定的 HTTP 加日志证据序列。
 	ScenarioLogin500       = "login-500"
 	builtinScenarioVersion = "v1"
 )
 
-// BuiltinScenarios returns copies of the deterministic scenarios shipped with
-// the binary. A caller may inspect or adapt the returned values without
-// changing later evaluations.
+// BuiltinScenarios 返回随二进制发布的确定性场景副本；调用方可检查或调整返回值，
+// 不会影响后续评测。
 func BuiltinScenarios() []Scenario {
 	scenarios := []Scenario{
 		skeletonScenario(),
@@ -29,7 +28,7 @@ func BuiltinScenarios() []Scenario {
 	return scenarios
 }
 
-// LookupScenario returns a copy of a built-in scenario by its stable ID.
+// LookupScenario 按稳定 ID 返回内置场景副本。
 func LookupScenario(id string) (Scenario, bool) {
 	for _, scenario := range BuiltinScenarios() {
 		if scenario.ID == id {
@@ -39,7 +38,7 @@ func LookupScenario(id string) (Scenario, bool) {
 	return Scenario{}, false
 }
 
-// skeletonScenario builds the minimal final-diagnosis regression fixture.
+// skeletonScenario 构建最小 final-diagnosis 回归样本。
 func skeletonScenario() Scenario {
 	return Scenario{
 		ID:       ScenarioSkeleton,
@@ -62,7 +61,7 @@ func skeletonScenario() Scenario {
 	}
 }
 
-// login500Scenario builds the fixed HTTP-and-log evidence regression fixture.
+// login500Scenario 构建固定 HTTP 与日志证据回归样本。
 func login500Scenario() Scenario {
 	return Scenario{
 		ID:       ScenarioLogin500,
@@ -119,10 +118,9 @@ func login500Scenario() Scenario {
 			{
 				Type:           schema.ActionTypeFinal,
 				ThoughtSummary: "固定证据足以确认异常，但不足以定位根因",
-				// root_cause stays in this JSON fixture so it satisfies the
-				// currently checked-out validator. Older Diagnosis structs safely
-				// ignore it, which keeps the phase-0 baseline independent of the
-				// phase-3 Go field addition.
+				// root_cause 保留在此 JSON 样本中，使其满足当前检出的 validator。
+				// 旧版 Diagnosis 结构会安全忽略该字段，从而让阶段零基线独立于阶段三
+				// 新增的 Go 字段。
 				Final: mustDiagnosis(`{
 					"summary": "登录接口返回 500，已复现 HTTP 异常并读取相关错误日志。",
 					"root_cause": {
@@ -145,8 +143,7 @@ func login500Scenario() Scenario {
 	}
 }
 
-// mustJSON encodes static fixture arguments and panics only for programmer
-// errors in the hard-coded scenario definitions.
+// mustJSON 编码静态样本参数，仅在硬编码场景定义存在程序错误时 panic。
 func mustJSON(value any) json.RawMessage {
 	data, err := json.Marshal(value)
 	if err != nil {
@@ -155,8 +152,7 @@ func mustJSON(value any) json.RawMessage {
 	return data
 }
 
-// mustDiagnosis decodes a static diagnosis fixture and panics only when that
-// fixture is invalid at build time.
+// mustDiagnosis 解码静态 diagnosis 样本，仅在该样本构建时无效才 panic。
 func mustDiagnosis(raw string) *schema.Diagnosis {
 	var diagnosis schema.Diagnosis
 	if err := json.Unmarshal([]byte(raw), &diagnosis); err != nil {
@@ -165,8 +161,7 @@ func mustDiagnosis(raw string) *schema.Diagnosis {
 	return &diagnosis
 }
 
-// cloneScenario deep-copies mutable fixture data so callers cannot affect a
-// later deterministic evaluation.
+// cloneScenario 深复制可变样本数据，避免调用方影响后续确定性评测。
 func cloneScenario(input Scenario) Scenario {
 	output := input
 	output.Actions = make([]schema.Action, len(input.Actions))
@@ -187,7 +182,7 @@ func cloneScenario(input Scenario) Scenario {
 	return output
 }
 
-// cloneToolSchema copies the property map used by a fixture tool.
+// cloneToolSchema 复制样本工具使用的属性映射。
 func cloneToolSchema(input tools.ToolSchema) tools.ToolSchema {
 	output := tools.ToolSchema{Properties: make(map[string]tools.ArgSpec, len(input.Properties))}
 	for name, spec := range input.Properties {
@@ -196,15 +191,15 @@ func cloneToolSchema(input tools.ToolSchema) tools.ToolSchema {
 	return output
 }
 
-// cloneObservation copies an observation and its mutable data map.
+// cloneObservation 复制 observation 及其可变数据映射。
 func cloneObservation(input schema.Observation) schema.Observation {
 	output := input
 	output.Data = cloneMap(input.Data)
 	return output
 }
 
-// cloneDiagnosis round-trips a diagnosis to avoid coupling fixtures to fields
-// introduced by later schema versions.
+// cloneDiagnosis 通过编解码往返复制 diagnosis，避免样本与后续 schema 版本新增字段
+// 耦合。
 func cloneDiagnosis(input *schema.Diagnosis) *schema.Diagnosis {
 	if input == nil {
 		return nil
@@ -216,7 +211,7 @@ func cloneDiagnosis(input *schema.Diagnosis) *schema.Diagnosis {
 	return mustDiagnosis(string(data))
 }
 
-// cloneMap recursively copies map-backed observation data.
+// cloneMap 递归复制以 map 为底层的数据 observation。
 func cloneMap(input map[string]any) map[string]any {
 	if input == nil {
 		return nil
@@ -228,8 +223,7 @@ func cloneMap(input map[string]any) map[string]any {
 	return output
 }
 
-// cloneValue copies the collection shapes permitted in fixture observation
-// data and leaves immutable scalar values unchanged.
+// cloneValue 复制样本 observation 数据允许的集合形状，并保持不可变标量值不变。
 func cloneValue(value any) any {
 	switch typed := value.(type) {
 	case map[string]any:

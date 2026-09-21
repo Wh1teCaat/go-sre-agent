@@ -18,25 +18,36 @@ import (
 type Status string
 
 const (
+	// StatusRunning 在 runtime 首次外部调用前持久化。
+	StatusRunning   Status = "running"
 	StatusCompleted Status = "completed"
 	StatusFailed    Status = "failed"
+	// StatusCancelled 记录一次已妥善保存的 Ctrl-C/SIGTERM 取消 checkpoint。
+	StatusCancelled Status = "cancelled"
+	// StatusTimedOut 记录总任务时间预算耗尽。
+	StatusTimedOut Status = "timed_out"
 )
 
 // State 是一次诊断运行的可持久化快照。
 // 它保存 trace 和最终 diagnosis，供后续 status/report/resume 使用。
 type State struct {
 	RunID string `json:"run_id"`
-	// SessionID optionally links this run to a phase-1 session. Its omission
-	// preserves compatibility with runs written before session memory existed.
+	// SessionID 可选地将本 run 关联到阶段一会话；省略该字段可兼容会话记忆出现前
+	// 写入的 run。
 	SessionID string            `json:"session_id,omitempty"`
 	Goal      string            `json:"goal"`
 	Status    Status            `json:"status"`
 	Plan      schema.Plan       `json:"plan,omitempty"`
 	Diagnosis *schema.Diagnosis `json:"diagnosis,omitempty"`
 	Trace     []trace.Entry     `json:"trace"`
-	Error     string            `json:"error,omitempty"`
-	CreatedAt time.Time         `json:"created_at"`
-	UpdatedAt time.Time         `json:"updated_at"`
+	// Calls 包含已 checkpoint 的 LLM 与工具调用状态；省略该字段可兼容阶段二前写入的
+	// 运行 JSON。
+	Calls        []Call     `json:"calls,omitempty"`
+	Error        string     `json:"error,omitempty"`
+	ErrorClass   ErrorClass `json:"error_class,omitempty"`
+	TaskDeadline *time.Time `json:"task_deadline,omitempty"`
+	CreatedAt    time.Time  `json:"created_at"`
+	UpdatedAt    time.Time  `json:"updated_at"`
 }
 
 type Store struct {

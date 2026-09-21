@@ -64,7 +64,7 @@ func (t *PingTool) Run(ctx context.Context, rawArgs json.RawMessage) (schema.Obs
 	tools.ApplyConnDeadline(ctx, conn)
 
 	// 这里不引入完整 PostgreSQL 驱动，也不执行 SQL。
-	// startup message 足够验证 TCP 可达、协议响应和认证阶段是否能推进。
+	// 启动消息足够验证 TCP 可达、协议响应和认证阶段是否能推进。
 	if err := sendStartupMessage(conn, target); err != nil {
 		return schema.Observation{}, fmt.Errorf("send postgres startup message: %w", err)
 	}
@@ -97,7 +97,7 @@ func parseEndpoint(dsn string) (endpoint, error) {
 		return endpoint{}, fmt.Errorf("postgres_ping requires dsn")
 	}
 	if strings.HasPrefix(dsn, "postgres://") || strings.HasPrefix(dsn, "postgresql://") {
-		// URL DSN 是应用常见配置格式，例如 postgres://user:pass@host/db。
+		// URL 格式 DSN 是应用常见配置形式，例如 postgres://user:pass@host/db。
 		return parseURLEndpoint(dsn)
 	}
 	// 同时支持 libpq keyword 格式，便于直接复用已有环境变量。
