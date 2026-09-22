@@ -195,8 +195,10 @@ reproduction or reachability checks, `postgres_ping` for protocol reachability,
 `postgres_check` for authenticated SQL and table checks, `redis_ping` for
 PING/PONG, `redis_check` for Redis memory, eviction, client, and keyspace
 evidence, `redis_scan` for key-level state under allowed prefixes (for example
-presence or refresh-token entries with TTLs), `kafka_check` for broker
-liveness, topic partition counts, and consumer-group lag, `websocket_check`
+presence or refresh-token entries with TTLs), `kafka_check` for a host-reachable
+broker's liveness, topic partition counts, and consumer-group lag, and
+`kafka_compose_check` for the configured internal Compose broker's topic and
+consumer-group lag, `websocket_check`
 for an HTTP Upgrade handshake, and `docker_inspect` or `docker_ps` for
 container state. Use `docker_stats` for CPU, memory, and restart-count
 evidence when resource exhaustion or a crash loop is plausible. Use
@@ -210,51 +212,56 @@ is stopped, has a nonzero exit code, or is explicitly unhealthy.
 
 For an intermittent HTTP failure, set `http_check` `repeat` (2-10) once to
 sample the endpoint instead of issuing many identical calls; cite the per-status
-counts. Use `log_read` `since` or `last_minutes` to scope logs to the incident
-window instead of keyword-matching the whole file. Set `websocket_check`
+counts and any configured response-header distribution (for example nginx
+`X-Upstream-Addr`). Use `log_read` `since` or `last_minutes`, or `docker_logs`
+`last_minutes` and `keyword`, to scope logs to the incident window. Set `websocket_check`
 `ping` to verify the message path when the goal concerns message delivery; a
 successful handshake alone does not prove messages flow.
 
-## Split-deployment playbooks
+## Go Chat Compose playbook
 
-These apply when the target is a split deployment (edge proxy → gateway
-replicas + logic service + Kafka event bus):
+The current Go Chat Compose topology is `edge` (nginx) → two `backend`
+replicas. Each backend accepts WebSocket messages, enqueues them to Kafka by
+conversation ID, consumes the assigned Kafka partitions, writes PostgreSQL,
+and publishes committed events through Redis Pub/Sub.
 
-- An edge-level `/health` 200 only proves the edge→logic path and logic's own
-  dependency checks. It does not cover gateway replicas or the event bus. If
-  the health payload has no kafka field, a total Kafka outage can coexist with
-  a 200 health response.
-- Per-replica gateway health is usually not published to the host. Use
-  `docker_ps` to discover replica container names, then `docker_probe`
-  `http_health` with the container-internal port on each replica. Gateway logs
-  are also often root-only files; `docker_logs` on each replica container is
-  the reliable path. Key gateway log markers: `KafkaBusReadFailed` (consumer
-  stalled: that replica silently misses pushes), `KafkaBusPublishFailed`
-  (publish degraded), `GatewaySendMessageFailed` / `logic_unavailable`
-  (gRPC path to logic broken).
-- Silent push loss: messages are stored and ACKed but online receivers get
-  nothing. HTTP, handshake, and DB checks all pass. Judge it by correlation:
-  `kafka_check` shows active consumer groups fewer than running gateway
-  replicas or growing active lag, or logic logs contain
-  `KafkaBusPublishFailed`, or `smoke_run` fails at a push/receive assertion
-  while the send assertion passes. Only cite what was actually observed.
-- After scaling or restarting gateway replicas behind nginx, the proxy may
-  hold a stale IP snapshot until restarted. Evidence: `websocket_check`
-  returns 502/504 while `docker_ps` shows replicas running; confirm with
-  `docker_probe` `nginx_config` (actual upstream servers) against
-  `docker_inspect` replica IPs.
-- Endpoint identity: before blaming a dependency, confirm the probed endpoint
-  is the intended instance. Compare `postgres_check` `server_version`/platform
-  and `redis_check` `run_id`/`os` against the expected deployment form (a
-  containerized service reports a Linux build). A host port can be occupied by
-  an unrelated instance that happens to have the same database name; a
-  mismatch means the tool probed the wrong target — report that instead of a
-  dependency fault, and verify with `docker_probe` `pg_identity`.
-- `kafka_check` group accounting: consumer groups named per instance-start are
-  expected to leave stale (Empty) groups behind after restarts. Only active
-  groups and active lag are health signals; stale-group lag is historical
-  noise, but active groups fewer than running replicas means some replica is
-  not consuming.
+- An edge-level `/health` 200 proves only that the request reached a backend
+  and that PostgreSQL was reachable at that observation time. Redis status is
+  reported in the body but does not change the HTTP status; Kafka consumer
+  liveness is not included. Never use `/health` 200 as evidence that Kafka
+  delivery or cross-instance push is healthy.
+- The current Compose project creates `go-chat-backend-1` and
+  `go-chat-backend-2` when its project name is `go-chat`. Names are deployment
+  facts, not assumptions: run `docker_ps` before selecting a dynamically named
+  replica. It discovers only containers belonging to the configured Compose
+  project and allowed services, and those names become valid targets for the
+  remainder of the diagnosis. For each discovered backend replica,
+  `docker_probe` `http_health` on port 8080 and `docker_logs` are the
+  appropriate per-instance checks. Use
+  `docker_probe` `nginx_config` on `chat-edge` when an edge response conflicts
+  with backend state.
+- The default Compose Kafka broker is internal-only and may have no host
+  address. Use `kafka_compose_check` when it is available: it reads the
+  configured topic and consumer group from `chat-kafka`. Use `kafka_check`
+  only when the runtime supplies an explicitly reachable host broker. If
+  neither tool can run, do not infer broker health, topic existence,
+  consumer-group count, or lag from a failed host connection; inspect
+  `chat-kafka` and backend container state/logs and mark verification pending.
+- Current backend log markers include `Failed to connect to kafka`,
+  `KafkaMessageFetchFailed`, `KafkaMessageHandleRetry`,
+  `KafkaMessageCommitFailed`, `WSBusBatchPublishFailed`, and
+  `WSOrderedPublishFailed`. A matching line is scoped evidence for that
+  operation and time; it does not establish message loss without a correlated
+  client, queue, or delivery observation.
+- A WebSocket `message_ack` with status `accepted` proves Kafka accepted the
+  command, not that it was stored or delivered. A later sender self-echo with
+  message ID and conversation sequence is the stored/delivered observation.
+  When no explicit synthetic transaction is authorized, report silent
+  push-path delivery as unverified rather than running `smoke_run`.
+- Before blaming a dependency, confirm the endpoint identity. Compare
+  `postgres_check` and `redis_check` facts with the expected deployment, and
+  use `docker_probe` `pg_identity` when the configured PostgreSQL container is
+  available. A host port can belong to an unrelated local process.
 
 When `correction` is present, fix exactly the reported parsing or policy error
 and return a new valid JSON object. If the needed observation exists, repair

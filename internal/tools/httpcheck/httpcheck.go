@@ -31,13 +31,15 @@ type Args struct {
 }
 
 type Tool struct {
-	maxBodyBytes int
-	allowedHosts tools.AllowedHosts
-	allowedPOST  map[string]struct{}
+	maxBodyBytes           int
+	allowedHosts           tools.AllowedHosts
+	allowedPOST            map[string]struct{}
+	allowedResponseHeaders map[string]string
 }
 
 // NewWithPolicy 额外声明允许 POST 的精确 URL；其他 URL 只能使用 GET/HEAD。
-func NewWithPolicy(maxBodyBytes int, allowedHosts []string, allowedPOSTURLs []string) *Tool {
+// responseHeaders 是可选的响应头白名单，避免把未授权响应头送入 trace 或模型上下文。
+func NewWithPolicy(maxBodyBytes int, allowedHosts []string, allowedPOSTURLs []string, responseHeaders ...[]string) *Tool {
 	if maxBodyBytes <= 0 {
 		maxBodyBytes = 512
 	}
@@ -47,17 +49,28 @@ func NewWithPolicy(maxBodyBytes int, allowedHosts []string, allowedPOSTURLs []st
 			allowedPOST[normalized] = struct{}{}
 		}
 	}
+	allowedResponseHeaders := make(map[string]string)
+	if len(responseHeaders) > 0 {
+		for _, header := range responseHeaders[0] {
+			header = strings.TrimSpace(header)
+			if header == "" || len([]rune(header)) > 128 || strings.ContainsAny(header, "\r\n:") {
+				continue
+			}
+			allowedResponseHeaders[strings.ToLower(header)] = header
+		}
+	}
 	return &Tool{
-		maxBodyBytes: maxBodyBytes,
-		allowedHosts: tools.NewAllowedHosts(allowedHosts),
-		allowedPOST:  allowedPOST,
+		maxBodyBytes:           maxBodyBytes,
+		allowedHosts:           tools.NewAllowedHosts(allowedHosts),
+		allowedPOST:            allowedPOST,
+		allowedResponseHeaders: allowedResponseHeaders,
 	}
 }
 
 func (t *Tool) Spec() tools.ToolSpec {
 	return tools.ToolSpec{
 		Name:        Name,
-		Description: "Request an HTTP endpoint and return status, latency, response request_id, and a body snippet. Put a user-specified reproduction request_id in the X-Request-ID header; use the returned request_id for later log correlation. GET/HEAD are read-only; POST is limited to configured diagnostic URLs.",
+		Description: "Request an HTTP endpoint and return status, latency, response request_id, a bounded body snippet, and operator-allowed response headers. Put a user-specified reproduction request_id in the X-Request-ID header; use the returned request_id for later log correlation. GET/HEAD are read-only; POST is limited to configured diagnostic URLs.",
 		Schema: tools.ToolSchema{
 			Properties: map[string]tools.ArgSpec{
 				"url":     {Type: "string", Required: true, Description: "HTTP URL to request."},
@@ -118,6 +131,8 @@ func (t *Tool) Run(ctx context.Context, rawArgs json.RawMessage) (schema.Observa
 	var lastLatencyMS int64
 	bodySnippet := ""
 	requestID := ""
+	lastResponseHeaders := map[string]string{}
+	responseHeaderValues := map[string]map[string]int{}
 	for attempt := 0; attempt < repeat; attempt++ {
 		request, err := http.NewRequestWithContext(ctx, method, args.URL, bytes.NewBufferString(args.Body))
 		if err != nil {
@@ -152,6 +167,13 @@ func (t *Tool) Run(ctx context.Context, rawArgs json.RawMessage) (schema.Observa
 		// 该 observation 后续会进入 LLM 上下文和 Markdown 报告。
 		bodySnippet = tools.RedactSensitive(string(body))
 		requestID = strings.TrimSpace(response.Header.Get("X-Request-ID"))
+		lastResponseHeaders = t.collectResponseHeaders(response.Header)
+		for header, value := range lastResponseHeaders {
+			if responseHeaderValues[header] == nil {
+				responseHeaderValues[header] = make(map[string]int)
+			}
+			responseHeaderValues[header][value]++
+		}
 		lastStatus = response.StatusCode
 		lastLatencyMS = latencyMS
 		statusCounts[strconv.Itoa(response.StatusCode)]++
@@ -169,12 +191,13 @@ func (t *Tool) Run(ctx context.Context, rawArgs json.RawMessage) (schema.Observa
 
 	summary := fmt.Sprintf("%s %s returned %d in %dms", method, args.URL, lastStatus, lastLatencyMS)
 	data := map[string]any{
-		"url":          args.URL,
-		"method":       method,
-		"status":       lastStatus,
-		"latency_ms":   lastLatencyMS,
-		"body_snippet": bodySnippet,
-		"request_id":   requestID,
+		"url":              args.URL,
+		"method":           method,
+		"status":           lastStatus,
+		"latency_ms":       lastLatencyMS,
+		"body_snippet":     bodySnippet,
+		"request_id":       requestID,
+		"response_headers": lastResponseHeaders,
 	}
 	if repeat > 1 {
 		summary = fmt.Sprintf("%s %s sampled %d times: %s; latency %d-%dms", method, args.URL, repeat, formatStatusCounts(statusCounts), minLatency, maxLatency)
@@ -183,6 +206,7 @@ func (t *Tool) Run(ctx context.Context, rawArgs json.RawMessage) (schema.Observa
 		data["transport_errors"] = transportErrors
 		data["latency_ms_min"] = minLatency
 		data["latency_ms_max"] = maxLatency
+		data["response_header_values"] = responseHeaderValues
 	}
 
 	return schema.Observation{
@@ -190,6 +214,29 @@ func (t *Tool) Run(ctx context.Context, rawArgs json.RawMessage) (schema.Observa
 		Summary: summary,
 		Data:    data,
 	}, nil
+}
+
+// collectResponseHeaders 仅提取运营者白名单中的响应头，并限制单个值长度与控制字符。
+func (t *Tool) collectResponseHeaders(headers http.Header) map[string]string {
+	collected := make(map[string]string, len(t.allowedResponseHeaders))
+	for normalized, configuredName := range t.allowedResponseHeaders {
+		values := headers.Values(configuredName)
+		if len(values) == 0 {
+			continue
+		}
+		value := strings.Join(values, ", ")
+		value = strings.Map(func(r rune) rune {
+			if r < 0x20 || r == 0x7f {
+				return -1
+			}
+			return r
+		}, value)
+		if runes := []rune(value); len(runes) > 256 {
+			value = string(runes[:256]) + "..."
+		}
+		collected[normalized] = tools.RedactSensitive(value)
+	}
+	return collected
 }
 
 // formatStatusCounts 输出确定性排序的状态分布，例如 "200x4, 500x1, errorx1"。

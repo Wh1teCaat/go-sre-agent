@@ -48,8 +48,9 @@ func initializeDiagnosis(opts diagnoseOptions, mockScenario string) (diagnosisSe
 // 参数: cfg 为已解析诊断配置；返回: 工具注册表或注册错误。
 func buildToolRegistry(cfg diagnoseOptions) (*tools.Registry, error) {
 	registry := tools.NewRegistry()
+	dockerScope := docker.NewScope(cfg.DockerComposeProject, cfg.AllowedComposeServices)
 	all := []tools.Tool{
-		httpcheck.NewWithPolicy(2048, cfg.AllowedHosts, cfg.AllowedPostURLs),
+		httpcheck.NewWithPolicy(2048, cfg.AllowedHosts, cfg.AllowedPostURLs, cfg.AllowedResponseHeaders),
 		logread.New(cfg.AllowedLogDirs, 1000),
 		postgres.NewPing(),
 		postgres.NewCheck(),
@@ -58,11 +59,20 @@ func buildToolRegistry(cfg diagnoseOptions) (*tools.Registry, error) {
 		redis.NewScan(cfg.RedisKeyPrefixes),
 		kafka.NewCheck(),
 		websocket.NewWithAllowedHosts(cfg.AllowedHosts),
-		docker.NewPS(cfg.AllowedContainers),
-		docker.NewInspect(cfg.AllowedContainers),
-		docker.NewLogs(cfg.AllowedContainers),
-		docker.NewStats(cfg.AllowedContainers),
-		docker.NewProbe(cfg.AllowedContainers),
+		docker.NewPS(cfg.AllowedContainers, dockerScope),
+		docker.NewInspect(cfg.AllowedContainers, dockerScope),
+		docker.NewLogs(cfg.AllowedContainers, dockerScope),
+		docker.NewStats(cfg.AllowedContainers, dockerScope),
+		docker.NewProbe(cfg.AllowedContainers, dockerScope),
+	}
+	if cfg.KafkaContainer != "" && cfg.KafkaTopic != "" && cfg.KafkaConsumerGroup != "" {
+		all = append(all, docker.NewKafkaComposeCheck(
+			cfg.AllowedContainers,
+			cfg.KafkaContainer,
+			cfg.KafkaTopic,
+			cfg.KafkaConsumerGroup,
+			dockerScope,
+		))
 	}
 	// smoke_run 是唯一的非只读探测（合成事务），仅在运营者显式配置命令时注册。
 	if len(cfg.SmokeCommand) > 0 {
@@ -174,12 +184,17 @@ func resolveDiagnosisConfig(opts diagnoseOptions) (diagnoseOptions, error) {
 		LogFile:                cfg.Targets.LogFile,
 		AllowedLogDirs:         allowedLogDirs,
 		AllowedHosts:           cfg.Policy.AllowedHosts,
+		AllowedResponseHeaders: cfg.Policy.AllowedResponseHeaders,
 		AllowedContainers:      cfg.Policy.AllowedContainers,
+		DockerComposeProject:   cfg.Policy.DockerComposeProject,
+		AllowedComposeServices: cfg.Policy.AllowedComposeServices,
 		RedisKeyPrefixes:       cfg.Policy.RedisKeyPrefixes,
 		PostgresDSN:            cfg.Targets.PostgresDSN,
 		RedisAddr:              cfg.Targets.RedisAddr,
 		KafkaAddr:              cfg.Targets.KafkaAddr,
 		KafkaTopic:             cfg.Targets.KafkaTopic,
+		KafkaContainer:         cfg.Targets.KafkaContainer,
+		KafkaConsumerGroup:     cfg.Targets.KafkaConsumerGroup,
 		SmokeCommand:           cfg.Targets.SmokeCommand,
 		SmokeDir:               cfg.Targets.SmokeDir,
 		SmokeTimeout:           cfg.Targets.SmokeTimeout,
@@ -276,19 +291,6 @@ func resolveRunDir(configPath, runDir string) (string, error) {
 	return cfg.Paths.RunDir, nil
 }
 
-// resolveSessionDir 解析 CLI 或配置中的会话状态根目录；它与 run-dir 的解析规则
-// 一致，但始终将两类数据分开存放。
-func resolveSessionDir(configPath, sessionDir string) (string, error) {
-	if strings.TrimSpace(sessionDir) != "" {
-		return sessionDir, nil
-	}
-	cfg, err := loadAppConfig(configPath)
-	if err != nil {
-		return "", err
-	}
-	return cfg.Paths.SessionDir, nil
-}
-
 // loadAppConfig 加载显式或默认路径下的 YAML 配置。
 // 参数: configPath 为 CLI 指定路径；返回: 配置和加载错误。
 func loadAppConfig(configPath string) (appconfig.Config, error) {
@@ -301,19 +303,30 @@ func loadAppConfig(configPath string) (appconfig.Config, error) {
 // targetContextForDiagnose 构造不含凭据的 LLM 目标上下文。
 // 参数: cfg 为诊断配置；返回: 提供给 LLM 的目标与白名单信息。
 func targetContextForDiagnose(cfg diagnoseOptions) map[string]any {
-	return map[string]any{
-		"backend_base_url":        cfg.BackendBaseURL,
-		"allowed_post_urls":       cfg.AllowedPostURLs,
-		"postgres_target":         safePostgresDSNForPrompt(cfg.PostgresDSN),
-		"postgres_dsn_configured": strings.TrimSpace(cfg.PostgresDSN) != "",
-		"redis_addr":              cfg.RedisAddr,
-		"kafka_addr":              cfg.KafkaAddr,
-		"kafka_topic":             cfg.KafkaTopic,
-		"websocket_url":           cfg.WebSocketURL,
-		"log_file":                cfg.LogFile,
-		"allowed_hosts":           cfg.AllowedHosts,
-		"docker_containers":       cfg.AllowedContainers,
+	context := map[string]any{
+		"backend_base_url":         cfg.BackendBaseURL,
+		"allowed_post_urls":        cfg.AllowedPostURLs,
+		"postgres_target":          safePostgresDSNForPrompt(cfg.PostgresDSN),
+		"postgres_dsn_configured":  strings.TrimSpace(cfg.PostgresDSN) != "",
+		"redis_addr":               cfg.RedisAddr,
+		"websocket_url":            cfg.WebSocketURL,
+		"log_file":                 cfg.LogFile,
+		"allowed_hosts":            cfg.AllowedHosts,
+		"allowed_response_headers": cfg.AllowedResponseHeaders,
+		"docker_containers":        cfg.AllowedContainers,
+		"docker_compose_project":   cfg.DockerComposeProject,
 	}
+	// 不将不可调用的 Kafka 目标交给模型，避免 Compose 内部 broker 被模型当成宿主机可达地址。
+	if toolAllowed(cfg.ToolAllowlist, kafka.CheckName) && strings.TrimSpace(cfg.KafkaAddr) != "" {
+		context["kafka_addr"] = cfg.KafkaAddr
+		context["kafka_topic"] = cfg.KafkaTopic
+	}
+	if toolAllowed(cfg.ToolAllowlist, docker.KafkaComposeCheckName) {
+		context["kafka_container"] = cfg.KafkaContainer
+		context["kafka_topic"] = cfg.KafkaTopic
+		context["kafka_consumer_group"] = cfg.KafkaConsumerGroup
+	}
+	return context
 }
 
 // legacyLoginURL 是未配置 targets.allowed_post_urls 时的兼容回退：
@@ -338,7 +351,7 @@ func toolArgOverridesForDiagnose(cfg diagnoseOptions) map[string]map[string]any 
 		overrides[redis.CheckName] = map[string]any{"addr": addr}
 		overrides[redis.ScanName] = map[string]any{"addr": addr}
 	}
-	if addr := strings.TrimSpace(cfg.KafkaAddr); addr != "" {
+	if addr := strings.TrimSpace(cfg.KafkaAddr); toolAllowed(cfg.ToolAllowlist, kafka.CheckName) && addr != "" {
 		kafkaOverrides := map[string]any{"addr": addr}
 		if topic := strings.TrimSpace(cfg.KafkaTopic); topic != "" {
 			kafkaOverrides["topic"] = topic
@@ -349,6 +362,17 @@ func toolArgOverridesForDiagnose(cfg diagnoseOptions) map[string]map[string]any 
 		return nil
 	}
 	return overrides
+}
+
+// toolAllowed 判断工具是否在本次运行的策略白名单中。
+// 参数: allowlist 为运行时白名单，name 为待查询工具名；返回: 工具是否允许调用。
+func toolAllowed(allowlist []string, name string) bool {
+	for _, allowed := range allowlist {
+		if strings.TrimSpace(allowed) == name {
+			return true
+		}
+	}
+	return false
 }
 
 // safePostgresDSNForPrompt 移除 DSN 密码后再暴露给 LLM。

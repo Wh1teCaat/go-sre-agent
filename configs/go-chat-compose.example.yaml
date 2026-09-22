@@ -1,0 +1,81 @@
+agent:
+  max_steps: 12
+  llm_timeout: 60s
+  tool_timeout: 10s
+  task_timeout: 5m
+  max_tool_calls: 24
+  max_parallel_tools: 2
+  context_budget_bytes: 49152
+  tool_output_budget_bytes: 8192
+  skill_path: skills/sre-diagnosis/SKILL.md
+
+policy:
+  # 此配置只注册只读诊断工具。smoke_run 会写入测试账号和消息，应单独显式配置。
+  tool_allowlist:
+    - http_check
+    - log_read
+    - redis_ping
+    - redis_check
+    - redis_scan
+    - kafka_compose_check
+    - postgres_ping
+    - postgres_check
+    - websocket_check
+    - docker_ps
+    - docker_inspect
+    - docker_logs
+    - docker_stats
+    - docker_probe
+  allowed_log_dirs:
+    - ../go-chat/logs
+    - ./testdata/logs
+  allowed_hosts:
+    - localhost
+    - 127.0.0.1
+    - "::1"
+  allowed_response_headers:
+    - X-Request-ID
+    - X-Upstream-Addr
+  redis_key_prefixes:
+    - "presence:"
+    - "auth:refresh:"
+    - "user:profile:"
+  # backend 未设置 container_name；docker_ps 会按下方 Compose 项目和服务发现实际副本。
+  # 保留默认名称可让 diagnose 首步不是 docker_ps 时仍能检查常用部署。
+  allowed_containers:
+    - chat-edge
+    - go-chat-backend-1
+    - go-chat-backend-2
+    - chat-frontend
+    - chat-postgres
+    - chat-kafka
+    - chat-redis-compose
+  docker_compose_project: go-chat
+  allowed_compose_services:
+    - backend
+    - edge
+    - frontend
+    - kafka
+    - postgres
+    - redis
+
+paths:
+  run_dir: .runs
+  session_dir: .sessions
+  report_dir: reports
+
+targets:
+  service: go-chat
+  environment: local
+  backend_base_url: http://localhost:8080
+  allowed_post_urls:
+    - http://localhost:8080/v1/user/login
+  postgres_dsn: postgres://postgres:postgres@localhost:5432/chat_proj?sslmode=disable
+  redis_addr: localhost:6379
+  # Kafka 默认只在 Compose 网络中开放，因此不设置 kafka_addr，也不注册 kafka_check。
+  # kafka_compose_check 会在 chat-kafka 容器内读取 topic 与 consumer group 的只读状态。
+  kafka_topic: chat-messages
+  kafka_container: chat-kafka
+  kafka_consumer_group: go-chat-message-writers
+  websocket_url: ws://localhost:8080/v1/ws
+  log_file: ../go-chat/logs/app.log

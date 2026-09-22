@@ -15,7 +15,7 @@ const legacyV1FailedRunID = "run_legacy_v1_failed"
 // TestLegacyV1FailedRunCanResumeWithMockSkeleton 验证早于 diagnosis.root_cause
 // 和 trace.PlanItemID 字段的失败运行记录仍可用 mock skeleton 恢复。
 func TestLegacyV1FailedRunCanResumeWithMockSkeleton(t *testing.T) {
-	fixturePath := filepath.Join("testdata", "legacy_runs", "v1_failed.json")
+	fixturePath := filepath.Join("..", "..", "testdata", "legacy_runs", "v1_failed.json")
 	fixture, err := os.ReadFile(fixturePath)
 	if err != nil {
 		t.Fatalf("read legacy fixture: %v", err)

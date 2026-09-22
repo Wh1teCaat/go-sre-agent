@@ -4,7 +4,7 @@
 # 前置条件：go-chat 已通过 docker compose 启动，configs/config.yaml 指向本机目标。
 # 用法：
 #   scripts/fault-injection.sh                # 运行全部场景
-#   scripts/fault-injection.sh logic-down     # 只运行单个场景
+#   scripts/fault-injection.sh backend-down   # 只运行单个场景
 # 环境变量：
 #   CHAT_DIR  go-chat 目录，默认 /home/y2/project/go-chat
 #   AGENT_DIR agent 目录，默认为脚本所在仓库根目录
@@ -13,11 +13,16 @@ set -euo pipefail
 
 CHAT_DIR="${CHAT_DIR:-/home/y2/project/go-chat}"
 AGENT_DIR="${AGENT_DIR:-$(cd "$(dirname "$0")/.." && pwd)}"
-SRE_BIN="${SRE_BIN:-sre}"
+SRE_BIN="${SRE_BIN:-$AGENT_DIR/sre}"
 # 报告与运行状态保留在 .runs 下，失败后可直接用 resume 继续未完成的 run。
 WORK_DIR="${WORK_DIR:-$AGENT_DIR/.runs/fault-injection}"
 LLM_TIMEOUT="${LLM_TIMEOUT:-60s}"
 mkdir -p "$WORK_DIR"
+
+if [ ! -x "$SRE_BIN" ]; then
+  echo "SRE_BIN is not executable: $SRE_BIN; build it with: go build -o ./sre ./cmd/sre-agent" >&2
+  exit 2
+fi
 
 run_agent() {
   local goal="$1" report="$2"
@@ -54,17 +59,17 @@ restore_pending() {
 }
 trap restore_pending EXIT
 
-scenario_logic_down() {
-  local report="$WORK_DIR/logic-down.md"
-  echo "== scenario: logic-down =="
-  PENDING_RESTORE=logic
-  compose stop logic
+scenario_backend_down() {
+  local report="$WORK_DIR/backend-down.md"
+  echo "== scenario: backend-down =="
+  PENDING_RESTORE=backend
+  compose stop backend
   run_agent "诊断 go-chat 登录接口为什么不可用。检查 HTTP 状态、相关容器状态、退出码和最近容器日志，并给出基于本次证据的结论。" "$report"
-  assert_contains "$report" '## Root Cause' logic-down
-  assert_contains "$report" 'http_check' logic-down
-  assert_contains "$report" 'docker_' logic-down
+  assert_contains "$report" '## Root Cause' backend-down
+  assert_contains "$report" 'http_check' backend-down
+  assert_contains "$report" 'docker_' backend-down
   restore_pending
-  echo "PASS logic-down"
+  echo "PASS backend-down"
 }
 
 scenario_redis_down() {
@@ -82,14 +87,14 @@ scenario_redis_down() {
 main() {
   local scenario="${1:-all}"
   case "$scenario" in
-  logic-down) scenario_logic_down ;;
+  backend-down) scenario_backend_down ;;
   redis-down) scenario_redis_down ;;
   all)
-    scenario_logic_down
+    scenario_backend_down
     scenario_redis_down
     ;;
   *)
-    echo "unknown scenario: $scenario (logic-down | redis-down | all)" >&2
+    echo "unknown scenario: $scenario (backend-down | redis-down | all)" >&2
     exit 2
     ;;
   esac

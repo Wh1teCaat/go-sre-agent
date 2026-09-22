@@ -28,8 +28,13 @@ policy:
     - ./logs
   allowed_hosts:
     - localhost
+  allowed_response_headers:
+    - X-Upstream-Addr
   allowed_containers:
     - chat-backend
+  docker_compose_project: chat-test
+  allowed_compose_services:
+    - backend
 paths:
   run_dir: /tmp/sre-agent-runs
   session_dir: /tmp/sre-agent-sessions
@@ -40,6 +45,8 @@ targets:
   environment: staging
   postgres_dsn: postgres://app:secret@localhost:5432/chat_proj?sslmode=disable
   redis_addr: localhost:6380
+  kafka_container: chat-kafka
+  kafka_consumer_group: writers
   websocket_url: ws://localhost:9000/ws
   log_file: ./logs/app.log
 `), 0o644); err != nil {
@@ -81,6 +88,15 @@ targets:
 	if got := cfg.Policy.AllowedContainers; len(got) != 1 || got[0] != "chat-backend" {
 		t.Fatalf("allowed containers = %#v, want chat-backend", got)
 	}
+	if got := cfg.Policy.AllowedResponseHeaders; len(got) != 1 || got[0] != "X-Upstream-Addr" {
+		t.Fatalf("allowed response headers = %#v, want X-Upstream-Addr", got)
+	}
+	if cfg.Policy.DockerComposeProject != "chat-test" || !contains(cfg.Policy.AllowedComposeServices, "backend") {
+		t.Fatalf("Compose scope = %q / %#v", cfg.Policy.DockerComposeProject, cfg.Policy.AllowedComposeServices)
+	}
+	if cfg.Targets.KafkaContainer != "chat-kafka" || cfg.Targets.KafkaConsumerGroup != "writers" {
+		t.Fatalf("Kafka Compose target = %q / %q", cfg.Targets.KafkaContainer, cfg.Targets.KafkaConsumerGroup)
+	}
 	if cfg.Targets.WebSocketURL != "ws://localhost:9000/ws" {
 		t.Fatalf("websocket URL = %q", cfg.Targets.WebSocketURL)
 	}
@@ -115,10 +131,50 @@ func TestDefaultAllowsLocalDiagnosticHosts(t *testing.T) {
 	if cfg.Paths.SessionDir != ".sessions" || cfg.Targets.Environment != "local" || cfg.Targets.Service != "go-chat" {
 		t.Fatalf("default session settings = %#v / %q / %q", cfg.Paths, cfg.Targets.Environment, cfg.Targets.Service)
 	}
+	if cfg.Targets.KafkaAddr != "" || cfg.Targets.KafkaTopic != "chat-messages" {
+		t.Fatalf("default Kafka target = %q / %q, want no host address and chat-messages topic", cfg.Targets.KafkaAddr, cfg.Targets.KafkaTopic)
+	}
+	if cfg.Targets.KafkaContainer != "chat-kafka" || cfg.Targets.KafkaConsumerGroup != "go-chat-message-writers" {
+		t.Fatalf("default Kafka Compose target = %q / %q", cfg.Targets.KafkaContainer, cfg.Targets.KafkaConsumerGroup)
+	}
+	for _, want := range []string{"chat-edge", "go-chat-backend-1", "go-chat-backend-2", "chat-kafka"} {
+		if !contains(cfg.Policy.AllowedContainers, want) {
+			t.Fatalf("default allowed containers = %#v, want %q", cfg.Policy.AllowedContainers, want)
+		}
+	}
 
 	for _, want := range []string{"localhost", "127.0.0.1", "::1"} {
 		if !contains(cfg.Policy.AllowedHosts, want) {
 			t.Fatalf("default allowed hosts = %#v, want %q", cfg.Policy.AllowedHosts, want)
+		}
+	}
+}
+
+// TestGoChatComposeConfigDisablesUnreachableKafka 验证随仓库提供的 Go Chat Compose
+// 配置不会把仅容器网络可达的 Kafka 或会写入业务数据的冒烟工具交给模型。
+func TestGoChatComposeConfigDisablesUnreachableKafka(t *testing.T) {
+	path := filepath.Join("..", "..", "configs", "go-chat-compose.example.yaml")
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("load Go Chat Compose config: %v", err)
+	}
+	for _, forbidden := range []string{"kafka_check", "smoke_run"} {
+		if contains(cfg.Policy.ToolAllowlist, forbidden) {
+			t.Fatalf("Go Chat Compose config must not enable %q: %#v", forbidden, cfg.Policy.ToolAllowlist)
+		}
+	}
+	if !contains(cfg.Policy.ToolAllowlist, "kafka_compose_check") {
+		t.Fatalf("Go Chat Compose config must enable kafka_compose_check: %#v", cfg.Policy.ToolAllowlist)
+	}
+	if cfg.Policy.DockerComposeProject != "go-chat" || !contains(cfg.Policy.AllowedComposeServices, "backend") {
+		t.Fatalf("Go Chat Compose scope = %q / %#v", cfg.Policy.DockerComposeProject, cfg.Policy.AllowedComposeServices)
+	}
+	if cfg.Targets.KafkaTopic != "chat-messages" {
+		t.Fatalf("Kafka topic = %q, want chat-messages", cfg.Targets.KafkaTopic)
+	}
+	for _, want := range []string{"chat-edge", "go-chat-backend-1", "go-chat-backend-2", "chat-kafka"} {
+		if !contains(cfg.Policy.AllowedContainers, want) {
+			t.Fatalf("Go Chat Compose container allowlist = %#v, want %q", cfg.Policy.AllowedContainers, want)
 		}
 	}
 }

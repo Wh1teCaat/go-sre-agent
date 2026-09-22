@@ -156,3 +156,58 @@ func TestLogsToolCapsLinesAndRedactsSecrets(t *testing.T) {
 		t.Fatalf("secret was not redacted: %#v", lines)
 	}
 }
+
+// TestLogsToolFiltersRecentKeyword 验证容器日志的时间窗口和关键词过滤不通过 shell 执行。
+func TestLogsToolFiltersRecentKeyword(t *testing.T) {
+	var gotArgs []string
+	runner := func(_ context.Context, args ...string) ([]byte, error) {
+		gotArgs = append([]string(nil), args...)
+		return []byte("started\nKafkaMessageFetchFailed topic=chat-messages\nother line\nKAFKA retry"), nil
+	}
+	tool := &LogsTool{policy: newPolicy([]string{"chat-kafka"}, runner)}
+
+	observation, err := tool.Run(context.Background(), json.RawMessage(`{"container":"chat-kafka","lines":999,"last_minutes":10,"keyword":"kafka"}`))
+	if err != nil {
+		t.Fatalf("run logs: %v", err)
+	}
+	if want := []string{"logs", "--tail", "500", "--since", "10m", "chat-kafka"}; !reflect.DeepEqual(gotArgs, want) {
+		t.Fatalf("docker args = %#v, want %#v", gotArgs, want)
+	}
+	lines := observation.Data["lines"].([]string)
+	if len(lines) != 2 || !strings.Contains(strings.Join(lines, "\n"), "KafkaMessageFetchFailed") {
+		t.Fatalf("filtered lines = %#v", lines)
+	}
+}
+
+// TestPSToolDiscoversComposeReplicaAndAllowsFollowUp 验证同一次诊断中 docker_ps
+// 发现的动态 Compose 副本可由其他 Docker 工具使用，但不放宽到未发现的容器。
+func TestPSToolDiscoversComposeReplicaAndAllowsFollowUp(t *testing.T) {
+	runner := func(_ context.Context, args ...string) ([]byte, error) {
+		if args[0] == "ps" {
+			return []byte("{\"Names\":\"demo-backend-1\",\"Labels\":\"com.docker.compose.project=demo,com.docker.compose.service=backend\"}\n" +
+				"{\"Names\":\"demo-other-1\",\"Labels\":\"com.docker.compose.project=demo,com.docker.compose.service=other\"}"), nil
+		}
+		if args[0] == "inspect" {
+			return []byte(`{"Status":"running","Running":true,"ExitCode":0}`), nil
+		}
+		return nil, errors.New("unexpected docker command")
+	}
+	scope := NewScope("demo", []string{"backend"})
+	ps := &PSTool{policy: newPolicy([]string{"chat-edge"}, runner, scope)}
+	observation, err := ps.Run(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("run docker ps: %v", err)
+	}
+	containers := observation.Data["containers"].([]map[string]any)
+	if len(containers) != 1 || containers[0]["container"] != "demo-backend-1" {
+		t.Fatalf("discovered containers = %#v", containers)
+	}
+
+	inspect := &InspectTool{policy: newPolicy([]string{"chat-edge"}, runner, scope)}
+	if _, err := inspect.Run(context.Background(), json.RawMessage(`{"container":"demo-backend-1"}`)); err != nil {
+		t.Fatalf("inspect discovered replica: %v", err)
+	}
+	if _, err := inspect.Run(context.Background(), json.RawMessage(`{"container":"demo-other-1"}`)); err == nil || !strings.Contains(err.Error(), "not allowed") {
+		t.Fatalf("inspect unconfigured replica error = %v", err)
+	}
+}

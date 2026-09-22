@@ -145,7 +145,9 @@ targets:
   log_file: ./testdata/logs/app.log
 ```
 
-完整示例见 [configs/config.example.yaml](configs/config.example.yaml)。LLM 环境变量见 [.env.example](.env.example)。
+完整的通用示例见 [configs/config.example.yaml](configs/config.example.yaml)。对本机 Go Chat
+Compose 使用 [configs/go-chat-compose.example.yaml](configs/go-chat-compose.example.yaml) 创建
+本地 `configs/config.yaml`；LLM 环境变量见 [.env.example](.env.example)。
 
 诊断规则位于仓库内的 [skills/sre-diagnosis/SKILL.md](skills/sre-diagnosis/SKILL.md)，不再写在 Go 源码中。`agent.skill_path` 支持绝对路径或相对于当前工作目录的路径。使用真实 LLM 启动诊断时，程序只读取一次该文件、去掉 YAML frontmatter，并把正文作为 system message 发送给模型；文件不存在、为空或超过 128 KiB 会阻止启动。mock 场景不调用模型，因此不需要加载 skill。
 
@@ -203,7 +205,7 @@ sre memory rebuild
 
 | 工具 | 用途 |
 | --- | --- |
-| `http_check` | 检查 HTTP 状态、延迟和响应片段；`repeat` 可对偶发故障采样并输出状态分布 |
+| `http_check` | 检查 HTTP 状态、延迟和响应片段；仅保存配置白名单中的响应头，`repeat` 可汇总状态和响应头分布 |
 | `log_read` | 读取允许目录中的近期日志，可按关键词、精确 `request_id` 或时间窗口（`since`/`last_minutes`）过滤 |
 | `postgres_ping` | 检查 PostgreSQL 协议层可达性 |
 | `postgres_check` | 检查 PostgreSQL 认证、SQL 连通性和表是否存在 |
@@ -211,10 +213,11 @@ sre memory rebuild
 | `redis_check` | 读取 Redis INFO：内存用量、驱逐、连接数、keyspace 规模和实例身份指纹 |
 | `redis_scan` | 在前缀白名单内做键级只读查询（SCAN + TTL），核对 presence/token 等服务端状态 |
 | `kafka_check` | 只读 Kafka 健康检查：broker 探活、cluster id、topic 分区数、消费组与活跃 lag |
+| `kafka_compose_check` | 在配置的 Kafka 容器内执行固定只读检查，读取 topic 分区、消费组和 lag；适用于 broker 未映射宿主机端口的 Compose 环境 |
 | `websocket_check` | 检查 WebSocket HTTP Upgrade 握手；`ping` 可验证协议层消息通路 |
-| `docker_ps` | 查看允许容器的运行状态 |
+| `docker_ps` | 查看允许容器的运行状态；可按配置的 Compose 项目和服务发现动态副本名称 |
 | `docker_inspect` | 查看允许容器的状态、退出码和健康状态 |
-| `docker_logs` | 读取允许容器的近期日志 |
+| `docker_logs` | 读取允许容器的近期日志，可按最近分钟数和关键词过滤 |
 | `docker_stats` | 查看允许容器的 CPU、内存、PID 用量和重启次数 |
 | `docker_probe` | 在允许容器内执行固定只读探测模板：未发布端口的 /health、nginx 上游快照、容器内 PostgreSQL 身份 |
 | `smoke_run` | 合成事务：执行配置的端到端冒烟脚本定位消息链路故障环节（唯一非只读工具，需显式配置启用） |
@@ -222,7 +225,7 @@ sre memory rebuild
 ## 安全边界
 
 - 所有诊断工具默认只读，并经过工具和参数 schema 校验。
-- HTTP、WebSocket、日志目录和 Docker 容器受配置白名单限制。
+- HTTP、WebSocket、日志目录和 Docker 容器受配置白名单限制；响应头只按显式白名单保存。
 - PostgreSQL DSN 和 Redis 地址由 runtime 注入，模型不能指定其他目标。
 - HTTP 默认仅允许 `GET`/`HEAD`；写请求受严格限制。
 - 工具和 LLM 请求均有独立超时。
@@ -232,7 +235,8 @@ sre memory rebuild
 - 模型生成的 evidence 必须匹配本次真实 trace。
 - 根因结论必须以结构化 `root_cause` 声明（`identified`/`suspected`/`undetermined`）；判定为 `identified` 时必须绑定真实 trace 证据。
 - `identified` 还需满足故障类型的必要证据规则；`suspected` 必须明确支持证据和待验证事项。字段说明与示例见[结构化证据与根因约束](docs/evidence-constraints.md)。
-- `docker_probe` 只能执行固定的只读命令模板；`redis_scan` 受键前缀白名单约束。
+- `docker_probe` 与 `kafka_compose_check` 只能执行固定的只读命令；`docker_ps` 发现的
+  动态容器也必须属于配置的 Compose 项目和服务，`redis_scan` 受键前缀白名单约束。
 - `postgres_check`/`redis_check` 会输出实例身份指纹（版本、平台、run_id），用于识别端口被无关实例占据的冒名场景。
 - `smoke_run` 是唯一的非只读工具（测试账号真实写入），默认不存在，仅在配置显式写出 `targets.smoke_command` 时注册，且命令内容模型不可指定。
 

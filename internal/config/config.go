@@ -28,10 +28,13 @@ type AgentConfig struct {
 }
 
 type PolicyConfig struct {
-	ToolAllowlist     []string
-	AllowedLogDirs    []string
-	AllowedHosts      []string
-	AllowedContainers []string
+	ToolAllowlist          []string
+	AllowedLogDirs         []string
+	AllowedHosts           []string
+	AllowedResponseHeaders []string
+	AllowedContainers      []string
+	DockerComposeProject   string
+	AllowedComposeServices []string
 	// RedisKeyPrefixes 限定 redis_scan 可查询的键前缀，避免把业务数据暴露进模型上下文。
 	RedisKeyPrefixes []string
 }
@@ -51,13 +54,15 @@ type TargetConfig struct {
 	Environment string
 	// AllowedPostURLs 是 http_check 允许 POST 复现的诊断地址；GET/HEAD 不受限制。
 	// 未配置时回退为 backend_base_url 派生的登录地址（见 cmd 层 legacyLoginURL）。
-	AllowedPostURLs []string
-	PostgresDSN     string
-	RedisAddr       string
-	KafkaAddr       string
-	KafkaTopic      string
-	WebSocketURL    string
-	LogFile         string
+	AllowedPostURLs    []string
+	PostgresDSN        string
+	RedisAddr          string
+	KafkaAddr          string
+	KafkaTopic         string
+	KafkaContainer     string
+	KafkaConsumerGroup string
+	WebSocketURL       string
+	LogFile            string
 	// SmokeCommand 非空时启用 smoke_run 合成事务工具。
 	// 这是唯一的非只读探测（测试账号真实写入），必须由运营者显式配置。
 	SmokeCommand []string
@@ -78,11 +83,14 @@ type rawConfig struct {
 		SkillPath             string `yaml:"skill_path"`
 	} `yaml:"agent"`
 	Policy struct {
-		ToolAllowlist     []string `yaml:"tool_allowlist"`
-		AllowedLogDirs    []string `yaml:"allowed_log_dirs"`
-		AllowedHosts      []string `yaml:"allowed_hosts"`
-		AllowedContainers []string `yaml:"allowed_containers"`
-		RedisKeyPrefixes  []string `yaml:"redis_key_prefixes"`
+		ToolAllowlist          []string `yaml:"tool_allowlist"`
+		AllowedLogDirs         []string `yaml:"allowed_log_dirs"`
+		AllowedHosts           []string `yaml:"allowed_hosts"`
+		AllowedResponseHeaders []string `yaml:"allowed_response_headers"`
+		AllowedContainers      []string `yaml:"allowed_containers"`
+		DockerComposeProject   string   `yaml:"docker_compose_project"`
+		AllowedComposeServices []string `yaml:"allowed_compose_services"`
+		RedisKeyPrefixes       []string `yaml:"redis_key_prefixes"`
 	} `yaml:"policy"`
 	Paths struct {
 		RunDir     string `yaml:"run_dir"`
@@ -90,19 +98,21 @@ type rawConfig struct {
 		ReportDir  string `yaml:"report_dir"`
 	} `yaml:"paths"`
 	Targets struct {
-		Service         string   `yaml:"service"`
-		BackendBaseURL  string   `yaml:"backend_base_url"`
-		Environment     string   `yaml:"environment"`
-		AllowedPostURLs []string `yaml:"allowed_post_urls"`
-		PostgresDSN     string   `yaml:"postgres_dsn"`
-		RedisAddr       string   `yaml:"redis_addr"`
-		KafkaAddr       string   `yaml:"kafka_addr"`
-		KafkaTopic      string   `yaml:"kafka_topic"`
-		WebSocketURL    string   `yaml:"websocket_url"`
-		LogFile         string   `yaml:"log_file"`
-		SmokeCommand    []string `yaml:"smoke_command"`
-		SmokeDir        string   `yaml:"smoke_dir"`
-		SmokeTimeout    string   `yaml:"smoke_timeout"`
+		Service            string   `yaml:"service"`
+		BackendBaseURL     string   `yaml:"backend_base_url"`
+		Environment        string   `yaml:"environment"`
+		AllowedPostURLs    []string `yaml:"allowed_post_urls"`
+		PostgresDSN        string   `yaml:"postgres_dsn"`
+		RedisAddr          string   `yaml:"redis_addr"`
+		KafkaAddr          string   `yaml:"kafka_addr"`
+		KafkaTopic         string   `yaml:"kafka_topic"`
+		KafkaContainer     string   `yaml:"kafka_container"`
+		KafkaConsumerGroup string   `yaml:"kafka_consumer_group"`
+		WebSocketURL       string   `yaml:"websocket_url"`
+		LogFile            string   `yaml:"log_file"`
+		SmokeCommand       []string `yaml:"smoke_command"`
+		SmokeDir           string   `yaml:"smoke_dir"`
+		SmokeTimeout       string   `yaml:"smoke_timeout"`
 	} `yaml:"targets"`
 }
 
@@ -129,6 +139,7 @@ func Default() Config {
 				"redis_check",
 				"redis_scan",
 				"kafka_check",
+				"kafka_compose_check",
 				"postgres_ping",
 				"postgres_check",
 				"websocket_check",
@@ -144,11 +155,27 @@ func Default() Config {
 				"127.0.0.1",
 				"::1",
 			},
+			AllowedResponseHeaders: []string{
+				"X-Request-ID",
+				"X-Upstream-Addr",
+			},
 			AllowedContainers: []string{
-				"chat-backend",
+				"chat-edge",
+				"go-chat-backend-1",
+				"go-chat-backend-2",
 				"chat-frontend",
 				"chat-postgres",
+				"chat-kafka",
 				"chat-redis-compose",
+			},
+			DockerComposeProject: "go-chat",
+			AllowedComposeServices: []string{
+				"backend",
+				"edge",
+				"frontend",
+				"kafka",
+				"postgres",
+				"redis",
 			},
 			RedisKeyPrefixes: []string{
 				"presence:",
@@ -166,10 +193,13 @@ func Default() Config {
 			Environment:    "local",
 			PostgresDSN:    "postgres://postgres:postgres@localhost:5432/chat_proj?sslmode=disable",
 			RedisAddr:      "localhost:6379",
-			KafkaAddr:      "localhost:29092",
-			KafkaTopic:     "chat.events",
-			WebSocketURL:   "ws://localhost:8080/v1/ws",
-			LogFile:        "testdata/logs/chat_proj_error.log",
+			// go-chat 的默认 Compose 不把 Kafka 暴露到宿主机；项目配置仅在
+			// 运营者明确提供可达 broker 时才启用 kafka_check。
+			KafkaTopic:         "chat-messages",
+			KafkaContainer:     "chat-kafka",
+			KafkaConsumerGroup: "go-chat-message-writers",
+			WebSocketURL:       "ws://localhost:8080/v1/ws",
+			LogFile:            "testdata/logs/chat_proj_error.log",
 		},
 	}
 }
@@ -254,8 +284,17 @@ func Load(path string) (Config, error) {
 	if len(raw.Policy.AllowedHosts) > 0 {
 		cfg.Policy.AllowedHosts = raw.Policy.AllowedHosts
 	}
+	if len(raw.Policy.AllowedResponseHeaders) > 0 {
+		cfg.Policy.AllowedResponseHeaders = raw.Policy.AllowedResponseHeaders
+	}
 	if len(raw.Policy.AllowedContainers) > 0 {
 		cfg.Policy.AllowedContainers = raw.Policy.AllowedContainers
+	}
+	if raw.Policy.DockerComposeProject != "" {
+		cfg.Policy.DockerComposeProject = raw.Policy.DockerComposeProject
+	}
+	if len(raw.Policy.AllowedComposeServices) > 0 {
+		cfg.Policy.AllowedComposeServices = raw.Policy.AllowedComposeServices
 	}
 	if len(raw.Policy.RedisKeyPrefixes) > 0 {
 		cfg.Policy.RedisKeyPrefixes = raw.Policy.RedisKeyPrefixes
@@ -292,6 +331,12 @@ func Load(path string) (Config, error) {
 	}
 	if raw.Targets.KafkaTopic != "" {
 		cfg.Targets.KafkaTopic = raw.Targets.KafkaTopic
+	}
+	if raw.Targets.KafkaContainer != "" {
+		cfg.Targets.KafkaContainer = raw.Targets.KafkaContainer
+	}
+	if raw.Targets.KafkaConsumerGroup != "" {
+		cfg.Targets.KafkaConsumerGroup = raw.Targets.KafkaConsumerGroup
 	}
 	if raw.Targets.WebSocketURL != "" {
 		cfg.Targets.WebSocketURL = raw.Targets.WebSocketURL

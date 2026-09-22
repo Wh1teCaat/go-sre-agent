@@ -129,11 +129,13 @@ targets:
 func TestSaveDiagnosisRunUsesConfiguredRunDir(t *testing.T) {
 	dir := t.TempDir()
 	runDir := filepath.Join(dir, "configured-runs")
+	sessionDir := filepath.Join(dir, "configured-sessions")
 	configPath := filepath.Join(dir, "config.yaml")
 	if err := os.WriteFile(configPath, []byte(fmt.Sprintf(`
 paths:
   run_dir: %q
-`, runDir)), 0o644); err != nil {
+  session_dir: %q
+`, runDir, sessionDir)), 0o644); err != nil {
 		t.Fatalf("write config: %v", err)
 	}
 
@@ -469,7 +471,9 @@ func TestTaskTimeoutPersistsCallStatesAndTerminalStatus(t *testing.T) {
 		SessionDir:  sessionDir,
 		MaxSteps:    3,
 		ToolTimeout: time.Second,
-		TaskTimeout: 20 * time.Millisecond,
+		// 预留足够时间让首次模型决策和工具 checkpoint 落盘；20ms 在完整并发回归中会
+		// 偶发地在首次调用前耗尽，无法验证本测试关注的调用状态持久化。
+		TaskTimeout: 100 * time.Millisecond,
 	}, "login-500")
 	if !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("start error = %v, want task deadline", err)
@@ -735,6 +739,41 @@ func TestTargetContextDoesNotLeakMalformedPostgresDSN(t *testing.T) {
 	}
 	if got := context["postgres_target"]; got != "[REDACTED_POSTGRES_DSN]" {
 		t.Fatalf("postgres target = %#v, want redacted placeholder", got)
+	}
+}
+
+// TestTargetContextOnlyIncludesCallableKafka 验证未授权的 Kafka 检查不会把不可达目标交给模型。
+func TestTargetContextOnlyIncludesCallableKafka(t *testing.T) {
+	base := diagnoseOptions{
+		KafkaAddr:  "localhost:29092",
+		KafkaTopic: "chat-messages",
+		ToolAllowlist: []string{
+			"http_check",
+		},
+	}
+	context := targetContextForDiagnose(base)
+	if _, exists := context["kafka_addr"]; exists {
+		t.Fatalf("Kafka address should be omitted when kafka_check is not allowed: %#v", context)
+	}
+
+	base.ToolAllowlist = append(base.ToolAllowlist, "kafka_check")
+	context = targetContextForDiagnose(base)
+	if got := context["kafka_addr"]; got != "localhost:29092" {
+		t.Fatalf("Kafka address = %#v, want configured target", got)
+	}
+	if got := context["kafka_topic"]; got != "chat-messages" {
+		t.Fatalf("Kafka topic = %#v, want configured topic", got)
+	}
+
+	base.ToolAllowlist = []string{"kafka_compose_check"}
+	base.KafkaContainer = "chat-kafka"
+	base.KafkaConsumerGroup = "go-chat-message-writers"
+	context = targetContextForDiagnose(base)
+	if _, exists := context["kafka_addr"]; exists {
+		t.Fatalf("Kafka host address should be absent for Compose-only check: %#v", context)
+	}
+	if got := context["kafka_container"]; got != "chat-kafka" {
+		t.Fatalf("Kafka container = %#v, want configured target", got)
 	}
 }
 
@@ -1242,7 +1281,15 @@ type openAIResponseFormatForTest struct {
 
 func writeTestConfig(t *testing.T, content string) string {
 	t.Helper()
-	path := filepath.Join(t.TempDir(), "config.yaml")
+	dir := t.TempDir()
+	if !strings.Contains(content, "\npaths:") && !strings.HasPrefix(strings.TrimSpace(content), "paths:") {
+		content = fmt.Sprintf(`paths:
+  run_dir: %q
+  session_dir: %q
+  report_dir: %q
+`, filepath.Join(dir, "runs"), filepath.Join(dir, "sessions"), filepath.Join(dir, "reports")) + content
+	}
+	path := filepath.Join(dir, "config.yaml")
 	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
 		t.Fatalf("write config: %v", err)
 	}

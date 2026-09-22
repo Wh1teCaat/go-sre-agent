@@ -32,7 +32,7 @@ sre diagnose \
 sre diagnose \
   --config configs/config.example.yaml \
   --mock-scenario login-500 \
-  --goal "诊断 chat_proj 登录接口 /v1/user/login 为什么返回 500"
+  --goal "诊断 go-chat 登录接口 /v1/user/login 为什么返回 500"
 ```
 
 当前 mock 流程：
@@ -73,7 +73,7 @@ sre resume --run-id <run_id> --resume-running
 sre diagnose \
   --config configs/config.example.yaml \
   --mock-scenario dependency-check \
-  --goal "检查 chat_proj 的 PostgreSQL 和 Redis 是否可连接"
+  --goal "检查 go-chat 的 PostgreSQL 和 Redis 是否可连接"
 ```
 
 当前 mock 流程：
@@ -88,7 +88,7 @@ sre diagnose \
 sre diagnose \
   --config configs/config.example.yaml \
   --mock-scenario websocket \
-  --goal "诊断 chat_proj WebSocket 为什么连接失败"
+  --goal "诊断 go-chat WebSocket 为什么连接失败"
 ```
 
 当前 mock 流程：

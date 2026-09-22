@@ -1205,7 +1205,7 @@ func (p *retryProvider) Next(context.Context, llm.Request) (llm.Decision, error)
 	p.calls++
 	if p.remainingTransientFailures > 0 {
 		p.remainingTransientFailures--
-		return llm.Decision{}, temporaryRuntimeError{}
+		return llm.Decision{}, timeoutRuntimeError{}
 	}
 	if p.remainingHTTPFailures > 0 {
 		p.remainingHTTPFailures--
@@ -1217,11 +1217,10 @@ func (p *retryProvider) Next(context.Context, llm.Request) (llm.Decision, error)
 	return llm.Decision{Action: &schema.Action{Type: schema.ActionTypeFinal, Final: &schema.Diagnosis{Summary: "retry succeeded"}}}, nil
 }
 
-type temporaryRuntimeError struct{}
+type timeoutRuntimeError struct{}
 
-func (temporaryRuntimeError) Error() string   { return "temporary provider transport failure" }
-func (temporaryRuntimeError) Timeout() bool   { return false }
-func (temporaryRuntimeError) Temporary() bool { return true }
+func (timeoutRuntimeError) Error() string { return "provider transport timeout" }
+func (timeoutRuntimeError) Timeout() bool { return true }
 
 type cancellingRuntimeTool struct {
 	cancel context.CancelFunc

@@ -219,6 +219,40 @@ func TestHTTPCheckRepeatSamplesFlakyEndpoint(t *testing.T) {
 	}
 }
 
+// TestHTTPCheckCollectsOnlyConfiguredResponseHeaders 验证 nginx upstream 等响应头必须显式
+// 白名单后才会持久化，且重复采样会汇总各值出现次数。
+func TestHTTPCheckCollectsOnlyConfiguredResponseHeaders(t *testing.T) {
+	calls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		calls++
+		upstream := "10.0.0.1:8080"
+		if calls == 2 {
+			upstream = "10.0.0.2:8080"
+		}
+		w.Header().Set("X-Upstream-Addr", upstream)
+		w.Header().Set("Set-Cookie", "session=super-secret")
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	tool := NewWithPolicy(64, nil, nil, []string{"X-Upstream-Addr"})
+	observation, err := tool.Run(context.Background(), mustArgs(t, Args{URL: server.URL, Repeat: 2}))
+	if err != nil {
+		t.Fatalf("run http check: %v", err)
+	}
+	headers := observation.Data["response_headers"].(map[string]string)
+	if got := headers["x-upstream-addr"]; got != "10.0.0.2:8080" {
+		t.Fatalf("last upstream header = %q, want second response", got)
+	}
+	if _, leaked := headers["set-cookie"]; leaked {
+		t.Fatalf("unexpected unconfigured response headers: %#v", headers)
+	}
+	values := observation.Data["response_header_values"].(map[string]map[string]int)
+	if got := values["x-upstream-addr"]["10.0.0.1:8080"]; got != 1 {
+		t.Fatalf("first upstream count = %d, want 1", got)
+	}
+}
+
 func TestHTTPCheckSchemaDescribesOptionalHeadersAndBody(t *testing.T) {
 	schema := NewWithPolicy(0, nil, nil).Spec().Schema
 

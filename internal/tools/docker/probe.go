@@ -52,8 +52,8 @@ type ProbeArgs struct {
 
 type ProbeTool struct{ policy *policy }
 
-func NewProbe(allowedContainers []string) *ProbeTool {
-	return &ProbeTool{policy: newPolicy(allowedContainers, runDocker)}
+func NewProbe(allowedContainers []string, scopes ...Scope) *ProbeTool {
+	return &ProbeTool{policy: newPolicy(allowedContainers, runDocker, scopes...)}
 }
 
 func (t *ProbeTool) Spec() tools.ToolSpec {

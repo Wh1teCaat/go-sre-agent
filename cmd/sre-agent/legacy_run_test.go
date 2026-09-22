@@ -15,7 +15,7 @@ const legacyV1CompletedRunID = "run_legacy_v1"
 // TestLegacyV1CompletedRunSupportsStatusAndReport 将首版持久化运行文件的形状
 // 固化为兼容性样本；其中 v1 trace 没有 PlanItemID，v1 diagnosis 没有 root_cause。
 func TestLegacyV1CompletedRunSupportsStatusAndReport(t *testing.T) {
-	fixturePath := filepath.Join("testdata", "legacy_runs", "v1_completed.json")
+	fixturePath := filepath.Join("..", "..", "testdata", "legacy_runs", "v1_completed.json")
 	fixture, err := os.ReadFile(fixturePath)
 	if err != nil {
 		t.Fatalf("read legacy fixture: %v", err)
