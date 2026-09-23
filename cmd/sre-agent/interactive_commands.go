@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"strings"
 
-	memory "github.com/y2/go-sre-agent/internal/memory"
 	runstore "github.com/y2/go-sre-agent/internal/run"
 	sessionstore "github.com/y2/go-sre-agent/internal/session"
 )
@@ -15,10 +14,6 @@ import (
 func (c *interactiveCLI) runDiagnosis(goal string) bool {
 	goal = strings.TrimSpace(goal)
 	if goal == "" {
-		return false
-	}
-	if _, err := c.previewHistory(goal, c.config.Service, c.config.Environment); err != nil {
-		fmt.Fprintf(c.output, "历史记忆读取失败，未开始诊断：%v\n", err)
 		return false
 	}
 	var result diagnoseResult
@@ -95,23 +90,6 @@ func (c *interactiveCLI) prepareResume(runID string) bool {
 
 // runResume 调用已有恢复逻辑，自动加载与保存 session 和跨会话 memory。
 func (c *interactiveCLI) runResume(runID string, resumeRunning bool) bool {
-	previous, err := c.runStore.Load(runID)
-	if err != nil {
-		fmt.Fprintf(c.output, "读取运行失败：%v\n", err)
-		return false
-	}
-	service := previous.Service
-	if strings.TrimSpace(service) == "" {
-		service = c.config.Service
-	}
-	environment := previous.Environment
-	if strings.TrimSpace(environment) == "" {
-		environment = c.config.Environment
-	}
-	if _, err := c.previewHistory(previous.Goal, service, environment); err != nil {
-		fmt.Fprintf(c.output, "历史记忆读取失败，未开始恢复：%v\n", err)
-		return false
-	}
 	var result diagnoseResult
 	var taskErr error
 	terminate := c.runTask(func(ctx context.Context) {
@@ -194,29 +172,6 @@ func (c *interactiveCLI) printDiagnosisCompletion(result diagnoseResult) {
 	} else {
 		fmt.Fprintln(c.output, "诊断运行完成，输入 /report 查看报告。")
 	}
-}
-
-// previewHistory 按实际 runtime 相同的范围和预算查询跨会话 memory，并显示真实命中来源。
-func (c *interactiveCLI) previewHistory(goal, service, environment string) ([]memory.Match, error) {
-	matches, err := c.memoryStore.Search(memory.Query{
-		Service:     service,
-		Environment: environment,
-		Goal:        goal,
-		MaxMatches:  3,
-		MaxBytes:    12 * 1024,
-	})
-	if err != nil {
-		return nil, err
-	}
-	if len(matches) == 0 {
-		fmt.Fprintln(c.output, "历史记忆：没有匹配记录，继续使用当前检查取证。")
-		return matches, nil
-	}
-	fmt.Fprintf(c.output, "历史记忆：找到 %d 条相关记录，已作为排查参考。\n", len(matches))
-	for index, match := range matches {
-		fmt.Fprintf(c.output, "  [%d] 来源：%s，结论强度：%s，结果：%s\n", index+1, match.RunID, match.ConclusionStatus, match.Outcome)
-	}
-	return matches, nil
 }
 
 // showStatus 输出显式或最近 run 的现有机器可读状态，不通过模型生成解释。

@@ -14,7 +14,7 @@ func main() {
 
 // printUsage 输出可脚本调用的 sre 子命令和默认交互入口说明。
 func printUsage(writer io.Writer) {
-	fmt.Fprintln(writer, "usage: sre [--config config.yaml] [--environment local] [--session-id <session_id>] [--run-dir .runs] [--session-dir .sessions]")
+	fmt.Fprintln(writer, "usage: sre [--config config.yaml] [--environment local] [--session-id <session_id>] [--run-dir .runs] [--session-dir .sessions] [--plain]")
 	fmt.Fprintln(writer, "       sre diagnose --goal <goal> [--task-timeout 5m] [--session-id <session_id>] [--session-dir .sessions] [--environment local] [--overwrite-session-memory] [--config config.yaml] [--mock-scenario login-500] [--out report.md]")
 	fmt.Fprintln(writer, "       sre eval mock [--scenario all] [--results-dir evals/results]")
 	fmt.Fprintln(writer, "       sre eval model [--scenario login-500] [--config config.yaml] [--results-dir evals/results] [--execute-real-model]")

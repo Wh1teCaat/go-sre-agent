@@ -16,23 +16,31 @@ import (
 // saveDiagnosisResult 持久化运行状态，并保留诊断错误与保存错误。
 // 参数: result 为运行结果，runErr 为诊断错误；返回: 合并后的错误，全部成功时返回 nil。
 func saveDiagnosisResult(result diagnoseResult, runErr error) error {
+	_, err := saveDiagnosisResultWithCollection(result, runErr)
+	return err
+}
+
+func saveDiagnosisResultWithCollection(result diagnoseResult, runErr error) (bool, error) {
 	var persistErr error
+	var collected bool
 	if result.State.RunID != "" {
 		if err := runstore.NewStore(result.RunDir).Save(result.State); err != nil {
 			persistErr = fmt.Errorf("save run state: %w", err)
 		} else if err := updateSessionForRun(result); err != nil {
 			persistErr = fmt.Errorf("save session state: %w", err)
 		} else if result.MemoryDir != "" {
-			if _, err := memory.NewStore(result.MemoryDir).UpdateForRun(result.State); err != nil {
+			if wasCollected, err := memory.NewStore(result.MemoryDir).UpdateForRun(result.State); err != nil {
 				persistErr = fmt.Errorf("update cross-session memories: %w", err)
+			} else {
+				collected = wasCollected
 			}
 		}
 	}
 	if runErr == nil {
 		if persistErr != nil && result.State.RunID != "" {
-			return fmt.Errorf("run_id: %s\n%w", result.State.RunID, persistErr)
+			return collected, fmt.Errorf("run_id: %s\n%w", result.State.RunID, persistErr)
 		}
-		return persistErr
+		return collected, persistErr
 	}
 	message := tools.RedactSensitive(runErr.Error())
 	if result.State.RunID != "" {
@@ -41,7 +49,7 @@ func saveDiagnosisResult(result diagnoseResult, runErr error) error {
 	if persistErr != nil {
 		message = fmt.Sprintf("%s\n%v", message, persistErr)
 	}
-	return fmt.Errorf("%s", message)
+	return collected, fmt.Errorf("%s", message)
 }
 
 // readDiagnosisStatus 读取指定 run 并生成 status 命令的 JSON 输出。

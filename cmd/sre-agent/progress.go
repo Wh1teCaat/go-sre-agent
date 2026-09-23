@@ -13,8 +13,9 @@ import (
 // cliProgressWriter 将 runtime 结构化事件转为面向人的 stderr 输出。锁保证未来
 // runtime 改为异步发布事件时，单条进度行也不会交错。
 type cliProgressWriter struct {
-	writer io.Writer
-	mutex  sync.Mutex
+	writer     io.Writer
+	mutex      sync.Mutex
+	showMemory bool
 }
 
 // newCLIProgressWriter 创建只写入指定输出流的进度接收器。
@@ -27,6 +28,19 @@ func (p *cliProgressWriter) Report(event agent.ProgressEvent) {
 	p.mutex.Lock()
 	defer p.mutex.Unlock()
 	switch event.Kind {
+	case agent.ProgressMemoryLoaded:
+		if !p.showMemory {
+			return
+		}
+		if len(event.Memories) == 0 {
+			fmt.Fprintln(p.writer, "历史记忆：没有匹配记录，继续使用当前检查取证。")
+		}
+		if len(event.Memories) > 0 {
+			fmt.Fprintf(p.writer, "历史记忆：找到 %d 条相关记录，已作为排查参考。\n", len(event.Memories))
+			for i, h := range event.Memories {
+				fmt.Fprintf(p.writer, "  [%d] 来源：%s，历史结论：%s\n", i+1, h.SourceRunID, h.Subject)
+			}
+		}
 	case agent.ProgressCheckStarted:
 		message := strings.TrimSpace(event.Message)
 		if message == "" {

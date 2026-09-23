@@ -138,6 +138,9 @@ func executeDiagnosisRun(ctx context.Context, opts diagnoseOptions, runID string
 		}
 		memories = append(memories, history...)
 	}
+	if cfg.Progress != nil {
+		cfg.Progress(agent.ProgressEvent{Kind: agent.ProgressMemoryLoaded, Memories: append([]schema.Memory(nil), memories...)})
+	}
 
 	taskCtx, cancel := context.WithTimeout(ctx, cfg.TaskTimeout)
 	defer cancel()

@@ -16,7 +16,7 @@ func runCLI(args []string, input io.Reader, output, errorOutput io.Writer, input
 	if len(args) == 0 || strings.HasPrefix(args[0], "-") {
 		options, showHelp, err := parseInteractiveOptions(args, input, output, signals, errorOutput)
 		if err != nil {
-			fmt.Fprintf(errorOutput, "交互参数错误：%v\n", err)
+			fmt.Fprintf(errorOutput, "Interactive arguments: %v\n", err)
 			return 2
 		}
 		if showHelp {
@@ -24,8 +24,19 @@ func runCLI(args []string, input io.Reader, output, errorOutput io.Writer, input
 			return 0
 		}
 		if !inputTerminal {
-			fmt.Fprintln(errorOutput, "无子命令时只能在终端进入交互模式；请使用 sre diagnose、resume、status、report、memory、eval 或 llm。")
+			fmt.Fprintln(errorOutput, "Interactive mode requires a terminal. Use sre diagnose, resume, status, report, memory, eval, or llm.")
 			return 2
+		}
+		if !options.Plain && isTerminalOutput(output) {
+			if term := os.Getenv("TERM"); term == "" || term == "dumb" {
+				fmt.Fprintln(errorOutput, "This terminal does not support TUI; use --plain.")
+				return 2
+			}
+			if err := runTUI(options); err != nil {
+				fmt.Fprintf(errorOutput, "Could not start TUI: %v\n", err)
+				return 1
+			}
+			return 0
 		}
 		if options.Signals == nil {
 			localSignals := make(chan os.Signal, 2)
@@ -34,7 +45,7 @@ func runCLI(args []string, input io.Reader, output, errorOutput io.Writer, input
 			options.Signals = localSignals
 		}
 		if err := runInteractive(options); err != nil {
-			fmt.Fprintf(errorOutput, "交互会话启动失败：%v\n", err)
+			fmt.Fprintf(errorOutput, "Could not start interactive session: %v\n", err)
 			return 1
 		}
 		return 0
@@ -77,6 +88,7 @@ func parseInteractiveOptions(args []string, input io.Reader, output io.Writer, s
 	sessionDir := fs.String("session-dir", "", "override session state directory")
 	mockScenario := fs.String("mock-scenario", "", "use a deterministic local mock scenario for each diagnosis")
 	overwriteSessionMemory := fs.Bool("overwrite-session-memory", false, "allow replacing modified generated session memory")
+	plain := fs.Bool("plain", false, "use line-oriented interactive mode")
 	help := fs.Bool("help", false, "show help")
 	fs.BoolVar(help, "h", false, "show help")
 	if err := fs.Parse(args); err != nil {
@@ -87,6 +99,7 @@ func parseInteractiveOptions(args []string, input io.Reader, output io.Writer, s
 	}
 	return interactiveOptions{
 		ConfigPath:             *configPath,
+		Plain:                  *plain,
 		Environment:            *environment,
 		SessionID:              *sessionID,
 		RunDir:                 *runDir,

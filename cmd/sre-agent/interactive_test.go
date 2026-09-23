@@ -31,7 +31,7 @@ func TestRunCLIDefaultInteractiveAndNonTerminalProtection(t *testing.T) {
 	if code := runCLI(nil, strings.NewReader(""), &nonTerminalOutput, &nonTerminalOutput, false, nil); code != 2 {
 		t.Fatalf("non-terminal default code = %d, output=%s", code, nonTerminalOutput.String())
 	}
-	if !strings.Contains(nonTerminalOutput.String(), "无子命令") {
+	if !strings.Contains(nonTerminalOutput.String(), "Interactive mode requires a terminal") {
 		t.Fatalf("non-terminal guidance = %q", nonTerminalOutput.String())
 	}
 
@@ -182,6 +182,13 @@ func TestInteractiveAutomaticMemoryPreviewAndCollection(t *testing.T) {
 		Output:     &output,
 	}, interactiveDependencies{
 		startDiagnosis: func(_ context.Context, opts diagnoseOptions, _ string) (diagnoseResult, error) {
+			hints, err := store.Hints(memory.Query{Service: opts.Service, Environment: opts.Environment, Goal: opts.Goal, MaxMatches: 3, MaxBytes: 12 * 1024})
+			if err != nil {
+				return diagnoseResult{}, err
+			}
+			if opts.Progress != nil {
+				opts.Progress(agent.ProgressEvent{Kind: agent.ProgressMemoryLoaded, Memories: hints})
+			}
 			state := interactiveMemoryRun("run_current", opts.SessionID, opts.Goal, time.Unix(20, 0).UTC())
 			state.Service = opts.Service
 			state.Environment = opts.Environment

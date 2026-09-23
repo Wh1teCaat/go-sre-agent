@@ -40,6 +40,11 @@ func initializeDiagnosis(opts diagnoseOptions, mockScenario string) (diagnosisSe
 	if err != nil {
 		return setup, err
 	}
+	if mockScenario == "tui-demo" {
+		if err := registerTUIDemoTools(setup.registry); err != nil {
+			return setup, err
+		}
+	}
 	setup.provider, setup.model, err = buildLLMProvider(cfg, mockScenario)
 	return setup, err
 }

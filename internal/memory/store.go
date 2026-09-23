@@ -50,6 +50,7 @@ type Match struct {
 	Environment      string
 	Outcome          string
 	ConclusionStatus string
+	UpdatedAt        time.Time
 	Keywords         []string
 	Content          string
 }

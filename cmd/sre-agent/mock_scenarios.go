@@ -16,6 +16,12 @@ import (
 // 参数: mockScenario 为场景名，cfg 提供目标参数；返回: action 序列或未知场景错误。
 func scenarioActions(mockScenario string, cfg diagnoseOptions) ([]schema.Action, error) {
 	switch mockScenario {
+	case "tui-demo":
+		return []schema.Action{
+			{Type: schema.ActionTypeToolCalls, ThoughtSummary: "并行检查登录接口与日志", ToolCalls: []schema.ToolCall{{Tool: "demo_http", Args: json.RawMessage(`{}`)}, {Tool: "demo_logs", Args: json.RawMessage(`{}`)}}},
+			{Type: schema.ActionTypeToolCall, Tool: "demo_postgres", Args: json.RawMessage(`{}`), ThoughtSummary: "检查数据库连接"},
+			{Type: schema.ActionTypeFinal, Final: &schema.Diagnosis{Summary: "数据库连接异常，根因仍需进一步确认。", RootCause: &schema.RootCause{Status: "undetermined", Statement: "当前仅观察到连接失败，仍需核对数据库状态与连接配置。"}, Evidence: []schema.Evidence{{Step: 1, Tool: "demo_http", Summary: "登录接口返回 500"}, {Step: 1, Tool: "demo_logs", Summary: "应用日志出现 connection refused"}, {Step: 2, Tool: "demo_postgres", Summary: "PostgreSQL 连接检查失败"}}, Recommendations: []string{"继续核对数据库状态及连接配置。"}}},
+		}, nil
 	case "skeleton":
 		return []schema.Action{
 			{

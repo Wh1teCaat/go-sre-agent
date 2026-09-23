@@ -91,15 +91,16 @@ sre diagnose \
 
 ### 5. 进入交互会话
 
-不带子命令时，`sre` 进入逐行交互会话。普通文本会创建诊断 run；斜杠命令由本地解析器处理，不会交给模型或 shell。
+stdin、stdout 都连接可用终端时，`sre` 默认进入全屏 TUI；`--plain` 保留原有逐行交互。普通文本会创建诊断 run；斜杠命令由本地解析器处理，不会交给模型或 shell。
 
 ```bash
 sre --config configs/config.yaml --environment local
-# 或恢复指定会话的上下文（不会自动恢复未完成 run）
+sre --plain  # 原逐行模式
+# 恢复指定会话的已保存视图（不会自动恢复未完成 run）
 sre --session-id <session_id>
 ```
 
-每次诊断会自动加载当前会话历史，并按服务、环境和目标查询至多 3 条、总计 12 KiB 的跨会话记忆作为待验证线索；无需先执行 `/memory`。交互命令、取消和恢复说明见 [交互式 CLI](docs/interactive-cli.md)。
+每次诊断会自动加载当前会话历史，并按服务、环境和目标查询至多 3 条、总计 12 KiB 的跨会话记忆作为待验证线索；无需先执行 `/memory`。交互命令、取消和恢复说明见 [交互式 CLI](docs/interactive-cli.md)。完全离线的 TUI 演示可运行 `sre --config configs/tui-demo.yaml --mock-scenario tui-demo`；演示工具只返回进程内模拟结果。
 
 ## 配置
 

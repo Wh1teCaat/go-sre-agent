@@ -33,6 +33,7 @@ type interactiveOptions struct {
 	ProgressOutput         io.Writer
 	Signals                <-chan os.Signal
 	Now                    func() time.Time
+	Plain                  bool
 }
 
 type interactiveDependencies struct {
@@ -160,6 +161,7 @@ func newInteractiveCLI(options interactiveOptions, deps interactiveDependencies)
 		memoryStore:  memory.NewStore(options.MemoryDir),
 	}
 	cli.progress = newCLIProgressWriter(newTerminalWriterWithMutex(options.ProgressOutput, cli.output.mutex))
+	cli.progress.showMemory = true
 
 	if sessionID := strings.TrimSpace(options.SessionID); sessionID != "" {
 		state, err := cli.sessionStore.Load(sessionID)

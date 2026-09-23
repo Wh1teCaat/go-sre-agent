@@ -1,6 +1,10 @@
 package agent
 
-import "time"
+import (
+	"time"
+
+	"github.com/y2/go-sre-agent/internal/schema"
+)
 
 const (
 	// ProgressCheckStarted 表示已完成 checkpoint、即将执行一次工具检查。
@@ -9,10 +13,12 @@ const (
 	ProgressCheckCompleted = "check_completed"
 	// ProgressFinalizing 表示已接受 final action，正在生成最终诊断。
 	ProgressFinalizing = "finalizing"
+	// ProgressMemoryLoaded reports the exact memories passed to Runtime.
+	ProgressMemoryLoaded = "memory_loaded"
 )
 
 // ProgressEvent 是 runtime 对外发布的结构化进度事件。回调接收方不得阻塞，
-// 也不得修改 runtime 状态；CLI 仅把它格式化到 stderr。
+// 也不得修改 runtime 状态；CLI 和 TUI 只消费这些事件。
 type ProgressEvent struct {
 	Kind       string
 	Step       int
@@ -24,4 +30,5 @@ type ProgressEvent struct {
 	Summary    string
 	Error      string
 	Duration   time.Duration
+	Memories   []schema.Memory
 }
