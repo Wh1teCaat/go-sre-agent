@@ -136,6 +136,9 @@ func TestOpenAICompatibleChatClientSendsChatRequestAndParsesContent(t *testing.T
 	if gotRequest.Model != "gpt-4o-mini" {
 		t.Fatalf("model = %q, want gpt-4o-mini", gotRequest.Model)
 	}
+	if gotRequest.Temperature != 0.2 {
+		t.Fatalf("explicit temperature = %v, want 0.2", gotRequest.Temperature)
+	}
 	if len(gotRequest.Messages) != 2 {
 		t.Fatalf("messages length = %d, want 2", len(gotRequest.Messages))
 	}

@@ -78,7 +78,7 @@ type openAIChatCompletionRequest struct {
 	Model          string                `json:"model"`
 	Messages       []openAIChatMessage   `json:"messages"`
 	ResponseFormat *openAIResponseFormat `json:"response_format,omitempty"`
-	Temperature    float64               `json:"temperature"`
+	Temperature    float64               `json:"temperature,omitempty"`
 }
 
 type openAIChatMessage struct {

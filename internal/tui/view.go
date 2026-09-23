@@ -14,6 +14,13 @@ var (
 	rule   = lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
 )
 
+// Three lit Braille dots rotate through the corners of a two-by-two square.
+var squareSpinnerFrames = [...]string{"⠋", "⠙", "⠚", "⠓"}
+
+func (m Model) squareSpinnerMark() string {
+	return squareSpinnerFrames[m.spinnerFrame%len(squareSpinnerFrames)]
+}
+
 func (m *Model) resize() {
 	w := max(1, m.width)
 	inputHeight := 1
@@ -88,8 +95,12 @@ func (m *Model) refresh() {
 		}
 		if m.active {
 			body.WriteString(" Check progress\n")
+			pendingCheck := false
 			for _, c := range m.checks {
-				mark := "⠋"
+				if !c.done {
+					pendingCheck = true
+				}
+				mark := m.squareSpinnerMark()
 				if c.done {
 					mark = "✓"
 				}
@@ -103,8 +114,8 @@ func (m *Model) refresh() {
 				}
 				body.WriteString(wrap(fmt.Sprintf(" %s %s  %s%s", mark, safe(c.tool), safe(summary), duration), max(1, m.viewport.Width-1)) + "\n")
 			}
-			if len(m.checks) == 0 {
-				body.WriteString(" ⠋ Preparing checks...\n")
+			if !pendingCheck || m.cancelling {
+				body.WriteString(" " + m.activityDisplay() + "\n")
 			}
 		}
 	}
@@ -144,12 +155,9 @@ func (m Model) View() string {
 	b.WriteString(m.input.View() + "\n" + line + "\n")
 	footer := "Ready  ·  Ctrl-D Exit  ·  Ctrl-O Details"
 	if m.active {
-		footer = fmt.Sprintf("Diagnosing · %s    Ctrl-C Cancel    Ctrl-O Details", time.Since(m.started).Round(time.Second))
+		footer = fmt.Sprintf("%s · %s    Ctrl-C Cancel    Ctrl-O Details", m.activityDisplay(), time.Since(m.started).Round(time.Second))
 	} else if m.commandBusy {
 		footer = fmt.Sprintf("Running command · %s    Ctrl-C Cancel", time.Since(m.commandStarted).Round(time.Second))
-	}
-	if m.cancelling {
-		footer = "Cancelling and saving..."
 	}
 	if m.overlay != "" {
 		footer = "Esc or q Close  ·  PgUp/PgDn Scroll"
@@ -169,6 +177,46 @@ func (m Model) View() string {
 	b.WriteString(subtle.Render(lipgloss.NewStyle().MaxWidth(m.width).Render(" " + footer)))
 	return b.String()
 }
+
+// activityDisplay is also used in the fixed footer, so the current phase stays
+// visible when the check list is longer than the viewport.
+func (m Model) activityDisplay() string {
+	label := m.activityLabel()
+	if strings.HasPrefix(label, "Thinking.") {
+		return label
+	}
+	return m.squareSpinnerMark() + " " + label
+}
+
+func (m Model) activityLabel() string {
+	switch {
+	case m.cancelling:
+		return "Cancelling and saving..."
+	case m.finalizing:
+		return "Preparing report..."
+	}
+	var running []string
+	for _, c := range m.checks {
+		if !c.done {
+			running = append(running, safe(c.tool))
+		}
+	}
+	if len(running) > 0 {
+		if len(running) > 2 {
+			return fmt.Sprintf("Calling %s, %s +%d more...", running[0], running[1], len(running)-2)
+		}
+		return "Calling " + strings.Join(running, ", ") + "..."
+	}
+	if m.modelCallID != "" {
+		dots := 1 + (m.spinnerFrame-m.modelStartedFrame)/3%3
+		return "Thinking" + strings.Repeat(".", dots)
+	}
+	if len(m.checks) == 0 {
+		return "Preparing checks..."
+	}
+	return "Waiting for next decision..."
+}
+
 func wrap(s string, width int) string {
 	if width < 1 {
 		return s

@@ -7,6 +7,10 @@ import (
 )
 
 const (
+	// ProgressModelStarted 表示已保存调用状态，模型请求即将开始。
+	ProgressModelStarted = "model_started"
+	// ProgressModelCompleted 表示模型调用结果已保存。
+	ProgressModelCompleted = "model_completed"
 	// ProgressCheckStarted 表示已完成 checkpoint、即将执行一次工具检查。
 	ProgressCheckStarted = "check_started"
 	// ProgressCheckCompleted 表示一次工具检查已有可记录结果。

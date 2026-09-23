@@ -601,9 +601,13 @@ func TestRuntimeStopsAtMaxSteps(t *testing.T) {
 func TestRuntimeWrapsProviderErrorWithStepContext(t *testing.T) {
 	registry := tools.NewRegistry()
 	store := new(trace.MemoryStore)
+	var events []ProgressEvent
 	runtime := NewRuntime(RuntimeConfig{
 		MaxSteps:    1,
 		ToolTimeout: time.Second,
+		Progress: func(event ProgressEvent) {
+			events = append(events, event)
+		},
 	}, failingProvider{err: errors.New("model returned invalid content")}, registry, policy.NewValidator(policy.Config{}), store)
 
 	_, err := runtime.Run(context.Background(), "check service")
@@ -614,6 +618,9 @@ func TestRuntimeWrapsProviderErrorWithStepContext(t *testing.T) {
 		if !strings.Contains(err.Error(), want) {
 			t.Fatalf("error = %q, want %q", err.Error(), want)
 		}
+	}
+	if len(events) != 2 || events[0].Kind != ProgressModelStarted || events[1].Kind != ProgressModelCompleted || events[0].CallID == "" || events[0].CallID != events[1].CallID {
+		t.Fatalf("failed model call did not emit matching lifecycle events: %#v", events)
 	}
 }
 
@@ -1019,9 +1026,22 @@ func TestRuntimeRunsIndependentToolCallsWithBoundedParallelism(t *testing.T) {
 	if entries[0].Step != 1 || entries[1].Step != 1 || entries[0].CallID == "" || entries[0].CallID == entries[1].CallID {
 		t.Fatalf("tool trace call ids = %#v / %#v, want distinct calls in step 1", entries[0], entries[1])
 	}
-	started, completed, finalizing := 0, 0, 0
+	started, completed, finalizing, modelStarted, modelCompleted := 0, 0, 0, 0, 0
+	activeModels := make(map[string]bool)
 	for _, event := range events {
 		switch event.Kind {
+		case ProgressModelStarted:
+			modelStarted++
+			if event.CallID == "" || activeModels[event.CallID] || event.Message != "" {
+				t.Fatalf("invalid model start event: %#v", event)
+			}
+			activeModels[event.CallID] = true
+		case ProgressModelCompleted:
+			modelCompleted++
+			if !activeModels[event.CallID] {
+				t.Fatalf("model completion without matching start: %#v", event)
+			}
+			delete(activeModels, event.CallID)
 		case ProgressCheckStarted:
 			started++
 		case ProgressCheckCompleted:
@@ -1030,8 +1050,8 @@ func TestRuntimeRunsIndependentToolCallsWithBoundedParallelism(t *testing.T) {
 			finalizing++
 		}
 	}
-	if started != 2 || completed != 2 || finalizing != 1 {
-		t.Fatalf("progress events = %#v, want 2 starts, 2 completions, 1 finalizing", events)
+	if started != 2 || completed != 2 || modelStarted != 2 || modelCompleted != 2 || len(activeModels) != 0 || finalizing != 1 {
+		t.Fatalf("progress events = %#v, want matching model and tool events plus finalizing", events)
 	}
 }
 

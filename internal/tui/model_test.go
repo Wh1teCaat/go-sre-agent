@@ -361,3 +361,132 @@ func TestPickerFollowsSelectionThroughLongWrappedList(t *testing.T) {
 		t.Fatalf("filtered choice hidden: %q", m.viewport.View())
 	}
 }
+
+func TestRunningProgressAnimatesAndRespectsScrollPosition(t *testing.T) {
+	m := New(&fakeBackend{})
+	next, _ := m.Update(tea.WindowSizeMsg{Width: 42, Height: 12})
+	m = next.(Model)
+	m.active = true
+	m.started = time.Now()
+	m.refresh()
+	if !strings.Contains(m.viewport.View(), "⠋ Preparing checks...") {
+		t.Fatalf("initial wait marker missing: %q", m.viewport.View())
+	}
+	for _, want := range []string{"⠙ Preparing checks...", "⠚ Preparing checks...", "⠓ Preparing checks...", "⠋ Preparing checks..."} {
+		next, _ = m.Update(tickMsg(time.Now()))
+		m = next.(Model)
+		if !strings.Contains(m.viewport.View(), want) {
+			t.Fatalf("three-dot square spinner did not rotate to %q: %q", want, m.viewport.View())
+		}
+	}
+
+	for i := 0; i < 12; i++ {
+		next, _ = m.Update(eventMsg{task: m.task, event: agent.ProgressEvent{
+			Kind: agent.ProgressCheckStarted, CallID: fmt.Sprintf("call_%d", i), Tool: fmt.Sprintf("check_%d", i),
+		}})
+		m = next.(Model)
+	}
+	if !m.viewport.AtBottom() || !strings.Contains(m.viewport.View(), "check_11") {
+		t.Fatalf("latest check did not scroll into view: offset=%d view=%q", m.viewport.YOffset, m.viewport.View())
+	}
+	next, _ = m.key(tea.KeyMsg{Type: tea.KeyPgUp})
+	m = next.(Model)
+	before := m.viewport.YOffset
+	if m.viewport.AtBottom() {
+		t.Fatal("PgUp did not move away from the bottom")
+	}
+	next, _ = m.Update(eventMsg{task: m.task, event: agent.ProgressEvent{
+		Kind: agent.ProgressCheckStarted, CallID: "call_new", Tool: "check_new",
+	}})
+	m = next.(Model)
+	next, _ = m.Update(tickMsg(time.Now()))
+	m = next.(Model)
+	if m.viewport.YOffset != before || !m.newMessages {
+		t.Fatalf("progress stole scroll position: before=%d after=%d new=%v", before, m.viewport.YOffset, m.newMessages)
+	}
+	for !m.viewport.AtBottom() {
+		next, _ = m.key(tea.KeyMsg{Type: tea.KeyPgDown})
+		m = next.(Model)
+	}
+	if m.newMessages || !strings.Contains(m.viewport.View(), "check_new") {
+		t.Fatalf("returning to bottom did not restore follow: new=%v view=%q", m.newMessages, m.viewport.View())
+	}
+}
+
+func TestModelThinkingAndCurrentToolStayVisibleInFooter(t *testing.T) {
+	m := New(&fakeBackend{})
+	next, _ := m.Update(tea.WindowSizeMsg{Width: 58, Height: 12})
+	m = next.(Model)
+	m.active = true
+	m.started = time.Now()
+	for i := 0; i < 12; i++ {
+		m.progress(agent.ProgressEvent{Kind: agent.ProgressCheckCompleted, CallID: fmt.Sprintf("old_%d", i), Tool: "http_check", Summary: "complete"})
+	}
+	m.progress(agent.ProgressEvent{Kind: agent.ProgressModelStarted, CallID: "model_a"})
+	m.refresh()
+	if !strings.Contains(m.View(), " Thinking. ·") || !strings.Contains(m.View(), "Ctrl-C Cancel") {
+		t.Fatalf("model activity missing or incorrectly prefixed: %q", m.View())
+	}
+	for _, want := range []string{"Thinking..", "Thinking...", "Thinking."} {
+		for range 3 {
+			next, _ = m.Update(tickMsg(time.Now()))
+			m = next.(Model)
+		}
+		if got := m.activityDisplay(); got != want {
+			t.Fatalf("thinking dots = %q, want %q", got, want)
+		}
+	}
+	next, _ = m.key(tea.KeyMsg{Type: tea.KeyPgUp})
+	m = next.(Model)
+	before := m.viewport.YOffset
+	if m.viewport.AtBottom() {
+		t.Fatal("PgUp did not move away from the bottom")
+	}
+	m.progress(agent.ProgressEvent{Kind: agent.ProgressModelStarted, CallID: "model_b"})
+	m.progress(agent.ProgressEvent{Kind: agent.ProgressModelCompleted, CallID: "model_a"})
+	m.refresh()
+	if m.viewport.YOffset != before || m.activityDisplay() != "Thinking." || !strings.Contains(m.View(), " Thinking. ·") {
+		t.Fatalf("thinking state or scroll position lost: %q", m.View())
+	}
+	m.progress(agent.ProgressEvent{Kind: agent.ProgressModelCompleted, CallID: "model_b"})
+	m.progress(agent.ProgressEvent{Kind: agent.ProgressCheckStarted, CallID: "tool_a", Tool: "docker_logs", Message: "private reasoning"})
+	m.progress(agent.ProgressEvent{Kind: agent.ProgressCheckStarted, CallID: "tool_b", Tool: "http_check"})
+	m.refresh()
+	view := m.View()
+	if !strings.Contains(view, "⠙ Calling docker_logs, http_check...") || strings.Contains(view, "private reasoning") || m.viewport.YOffset != before {
+		t.Fatalf("tool activity missing or leaked reasoning: %q", view)
+	}
+	next, _ = m.Update(tickMsg(time.Now()))
+	m = next.(Model)
+	if !strings.Contains(m.View(), "⠚ Calling docker_logs, http_check...") || m.viewport.YOffset != before {
+		t.Fatalf("tool spinner did not rotate while scrolled: %q", m.View())
+	}
+	m.progress(agent.ProgressEvent{Kind: agent.ProgressCheckCompleted, CallID: "tool_a", Tool: "docker_logs", Summary: "complete"})
+	m.refresh()
+	if !strings.Contains(m.View(), "Calling http_check...") {
+		t.Fatalf("remaining tool not shown: %q", m.View())
+	}
+}
+
+func TestProgressShowsActivityBetweenChecksAndDuringFinalizing(t *testing.T) {
+	m := New(&fakeBackend{})
+	next, _ := m.Update(tea.WindowSizeMsg{Width: 50, Height: 14})
+	m = next.(Model)
+	m.active = true
+	m.progress(agent.ProgressEvent{Kind: agent.ProgressCheckStarted, CallID: "http", Tool: "HTTP"})
+	m.progress(agent.ProgressEvent{Kind: agent.ProgressCheckCompleted, CallID: "http", Tool: "HTTP", Summary: "returned 500"})
+	m.refresh()
+	if !strings.Contains(m.viewport.View(), "Waiting for next decision...") {
+		t.Fatalf("no activity between checks: %q", m.viewport.View())
+	}
+	m.progress(agent.ProgressEvent{Kind: agent.ProgressFinalizing})
+	m.refresh()
+	if !strings.Contains(m.viewport.View(), "Preparing report...") {
+		t.Fatalf("no activity during finalization: %q", m.viewport.View())
+	}
+	m.cancelling = true
+	m.refresh()
+	if !strings.Contains(m.viewport.View(), "Cancelling and saving...") {
+		t.Fatalf("no activity during cancellation: %q", m.viewport.View())
+	}
+}

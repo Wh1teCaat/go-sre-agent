@@ -85,7 +85,7 @@ type anthropicMessageRequest struct {
 	MaxTokens   int                `json:"max_tokens"`
 	System      string             `json:"system,omitempty"`
 	Messages    []anthropicMessage `json:"messages"`
-	Temperature float64            `json:"temperature"`
+	Temperature float64            `json:"temperature,omitempty"`
 }
 
 type anthropicMessage struct {

@@ -89,6 +89,8 @@ type Model struct {
 	commandBusy           bool
 	exitAfterCancel       bool
 	cancelling            bool
+	finalizing            bool
+	modelCallID           string
 	task                  uint64
 	memorySeenTask        uint64
 	cancel                context.CancelFunc
@@ -107,6 +109,8 @@ type Model struct {
 	pendingResumeRunning  bool
 	pending               bool
 	newMessages           bool
+	spinnerFrame          int
+	modelStartedFrame     int
 	started               time.Time
 	commandStarted        time.Time
 	notice                string
@@ -223,6 +227,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case tickMsg:
 		if m.active || m.commandBusy {
+			m.spinnerFrame++
+			if m.active {
+				m.refresh()
+			}
 			return m, tick()
 		}
 		return m, nil
@@ -237,7 +245,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-func tick() tea.Cmd { return tea.Tick(time.Second, func(t time.Time) tea.Msg { return tickMsg(t) }) }
+func tick() tea.Cmd {
+	return tea.Tick(120*time.Millisecond, func(t time.Time) tea.Msg { return tickMsg(t) })
+}
 func (m *Model) listen() tea.Cmd {
 	return func() tea.Msg {
 		select {
@@ -272,6 +282,13 @@ func safe(s string) string {
 }
 func (m *Model) progress(e agent.ProgressEvent) {
 	switch e.Kind {
+	case agent.ProgressModelStarted:
+		m.modelCallID = e.CallID
+		m.modelStartedFrame = m.spinnerFrame
+	case agent.ProgressModelCompleted:
+		if e.CallID == m.modelCallID {
+			m.modelCallID = ""
+		}
 	case agent.ProgressMemoryLoaded:
 		m.memories = append([]schema.Memory(nil), e.Memories...)
 		m.memorySeenTask = m.task
@@ -301,7 +318,8 @@ func (m *Model) progress(e agent.ProgressEvent) {
 			c.tool = e.Tool
 		}
 		if e.Kind == agent.ProgressCheckStarted {
-			c.summary = "Checking..."
+			m.modelCallID = ""
+			c.summary = "Calling..."
 		}
 		if e.Kind == agent.ProgressCheckCompleted {
 			c.done = true
@@ -310,7 +328,8 @@ func (m *Model) progress(e agent.ProgressEvent) {
 			c.duration = e.Duration
 		}
 	case agent.ProgressFinalizing:
-		m.notice = "Preparing diagnosis report..."
+		m.modelCallID = ""
+		m.finalizing = true
 	}
 }
 func (m *Model) finish(r Completion) {
@@ -319,6 +338,8 @@ func (m *Model) finish(r Completion) {
 	}
 	m.active = false
 	m.cancelling = false
+	m.finalizing = false
+	m.modelCallID = ""
 	m.cancel = nil
 	m.notice = ""
 	if r.SessionID != "" {
@@ -372,7 +393,10 @@ func (m *Model) start(goal string) tea.Cmd {
 	m.cancel = cancel
 	m.active = true
 	m.cancelling = false
+	m.finalizing = false
+	m.modelCallID = ""
 	m.started = time.Now()
+	m.spinnerFrame = 0
 	m.notice = ""
 	m.checks = nil
 	m.memories = nil
@@ -403,7 +427,10 @@ func (m *Model) startResume(runID string, resumeRunning bool) tea.Cmd {
 	m.cancel = cancel
 	m.active = true
 	m.cancelling = false
+	m.finalizing = false
+	m.modelCallID = ""
 	m.started = time.Now()
+	m.spinnerFrame = 0
 	m.notice = ""
 	m.checks = nil
 	m.memories = nil

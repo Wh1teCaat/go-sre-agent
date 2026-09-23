@@ -27,9 +27,10 @@ type Message struct {
 // ChatRequest 是项目内部使用的通用模型请求。
 // 它只表达项目需要的通用能力，厂商特有字段由具体 ChatClient 适配。
 type ChatRequest struct {
-	Model       string
-	Messages    []Message
-	OutputMode  OutputMode
+	Model      string
+	Messages   []Message
+	OutputMode OutputMode
+	// Zero leaves sampling at the provider default; compatible clients omit the field.
 	Temperature float64
 }
 

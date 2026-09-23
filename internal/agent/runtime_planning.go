@@ -48,10 +48,13 @@ func (r *Runtime) requestValidPlan(ctx context.Context, request llm.Request) (*s
 		if err != nil {
 			return lastPlan, meta, err
 		}
+		callID := r.calls[callIndex].CallID
+		r.emitProgress(ProgressEvent{Kind: ProgressModelStarted, Step: request.Step, TotalSteps: r.config.MaxSteps, CallID: callID})
 		callCtx, cancel := context.WithTimeout(ctx, r.config.LLMTimeout)
 		startedAt := time.Now()
 		plan, err := r.provider.Plan(callCtx, request)
-		meta.Duration += time.Since(startedAt)
+		duration := time.Since(startedAt)
+		meta.Duration += duration
 		cancel()
 		lastPlan = plan
 		providerFailed := err != nil
@@ -69,7 +72,8 @@ func (r *Runtime) requestValidPlan(ctx context.Context, request llm.Request) (*s
 			if checkpointErr := r.finishCall(callIndex, runstore.CallStatusSucceeded, "", nil, nil); checkpointErr != nil {
 				return lastPlan, meta, checkpointErr
 			}
-			meta.CallID = r.calls[callIndex].CallID
+			r.emitProgress(ProgressEvent{Kind: ProgressModelCompleted, Step: request.Step, TotalSteps: r.config.MaxSteps, CallID: callID, Duration: duration})
+			meta.CallID = callID
 			return plan, meta, nil
 		}
 		class := runstore.ErrorClassValidation
@@ -79,6 +83,7 @@ func (r *Runtime) requestValidPlan(ctx context.Context, request llm.Request) (*s
 		if checkpointErr := r.finishCall(callIndex, callStatusForError(class), class, lastErr, nil); checkpointErr != nil {
 			return lastPlan, meta, checkpointErr
 		}
+		r.emitProgress(ProgressEvent{Kind: ProgressModelCompleted, Step: request.Step, TotalSteps: r.config.MaxSteps, CallID: callID, Duration: duration})
 		if attempt == 2 {
 			break
 		}
@@ -110,10 +115,13 @@ func (r *Runtime) requestValidDecision(ctx context.Context, request llm.Request,
 		if err != nil {
 			return lastDecision, meta, err
 		}
+		callID := r.calls[callIndex].CallID
+		r.emitProgress(ProgressEvent{Kind: ProgressModelStarted, Step: request.Step, TotalSteps: r.config.MaxSteps, CallID: callID})
 		callCtx, cancel := context.WithTimeout(ctx, r.config.LLMTimeout)
 		startedAt := time.Now()
 		decision, err := r.provider.Next(callCtx, request)
-		meta.Duration += time.Since(startedAt)
+		duration := time.Since(startedAt)
+		meta.Duration += duration
 		cancel()
 		lastDecision = decision
 		providerFailed := err != nil
@@ -169,7 +177,8 @@ func (r *Runtime) requestValidDecision(ctx context.Context, request llm.Request,
 			if checkpointErr := r.finishCall(callIndex, runstore.CallStatusSucceeded, "", nil, nil); checkpointErr != nil {
 				return lastDecision, meta, checkpointErr
 			}
-			meta.CallID = r.calls[callIndex].CallID
+			r.emitProgress(ProgressEvent{Kind: ProgressModelCompleted, Step: request.Step, TotalSteps: r.config.MaxSteps, CallID: callID, Duration: duration})
+			meta.CallID = callID
 			return decision, meta, nil
 		}
 		class := runstore.ErrorClassValidation
@@ -179,6 +188,7 @@ func (r *Runtime) requestValidDecision(ctx context.Context, request llm.Request,
 		if checkpointErr := r.finishCall(callIndex, callStatusForError(class), class, lastErr, nil); checkpointErr != nil {
 			return lastDecision, meta, checkpointErr
 		}
+		r.emitProgress(ProgressEvent{Kind: ProgressModelCompleted, Step: request.Step, TotalSteps: r.config.MaxSteps, CallID: callID, Duration: duration})
 		if attempt == 2 {
 			break
 		}

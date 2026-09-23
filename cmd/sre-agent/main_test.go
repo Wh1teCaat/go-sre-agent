@@ -882,6 +882,11 @@ targets:
 	if len(gotRequests) != 4 {
 		t.Fatalf("captured llm requests = %d, want 4", len(gotRequests))
 	}
+	for i, request := range gotRequests {
+		if request.Temperature != nil {
+			t.Fatalf("diagnosis request %d set unsupported temperature %v", i+1, *request.Temperature)
+		}
+	}
 	if !strings.Contains(gotRequests[0].Messages[1].Content, "target_context") {
 		t.Fatalf("first request missing target context:\n%s", gotRequests[0].Messages[1].Content)
 	}
@@ -944,6 +949,9 @@ func TestRunLLMChatReturnsRawModelContent(t *testing.T) {
 	}
 	if gotRequest.Model != "gpt-4o-mini" {
 		t.Fatalf("model = %q, want gpt-4o-mini", gotRequest.Model)
+	}
+	if gotRequest.Temperature != nil {
+		t.Fatalf("/llm chat set unsupported temperature %v", *gotRequest.Temperature)
 	}
 	if gotRequest.ResponseFormat != nil {
 		t.Fatalf("response_format = %#v, want nil for raw chat", gotRequest.ResponseFormat)
@@ -1268,6 +1276,7 @@ type openAIChatCompletionRequestForTest struct {
 	Model          string                       `json:"model"`
 	Messages       []openAIChatMessageForTest   `json:"messages"`
 	ResponseFormat *openAIResponseFormatForTest `json:"response_format,omitempty"`
+	Temperature    *float64                     `json:"temperature,omitempty"`
 }
 
 type openAIChatMessageForTest struct {

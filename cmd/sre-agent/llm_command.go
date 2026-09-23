@@ -39,7 +39,6 @@ func chatWithLLM(ctx context.Context, message string) (string, error) {
 				Content: message,
 			},
 		},
-		OutputMode:  llm.OutputText,
-		Temperature: 0.2,
+		OutputMode: llm.OutputText,
 	})
 }

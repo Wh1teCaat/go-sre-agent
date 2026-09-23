@@ -123,9 +123,8 @@ func buildLLMProvider(cfg diagnoseOptions, mockScenario string) (llm.Provider, s
 		return nil, "", err
 	}
 	return llm.NewActionPlanner(client, llm.ActionPlannerConfig{
-		Model:       llmConfig.Model,
-		Temperature: 0.2,
-		Skill:       skill,
+		Model: llmConfig.Model,
+		Skill: skill,
 	}), llmConfig.Model, nil
 }
 
