@@ -49,6 +49,7 @@ coverage.html
 *.coverprofile
 *.prof
 *.pprof
+/sre
 /sre-agent
 /output
 
