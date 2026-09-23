@@ -1,6 +1,6 @@
 # 架构
 
-`go-sre-agent` 是一个 CLI-first 的 SRE 诊断 Agent，不使用 Agent 框架。Runtime 先让 LLM provider 决定直接行动还是按需规划，校验 action，执行白名单内的诊断工具，记录 trace，然后持续循环，直到 provider 返回最终诊断。除显式配置的 `smoke_run` 外，工具均为只读；`smoke_run` 是受恢复限制的合成事务。
+`go-sre-agent` 是一个以单列 TUI 为默认入口的 SRE 诊断 Agent，同时保留逐行交互和非交互子命令，不使用 Agent 框架。Runtime 先让 LLM provider 决定直接行动还是按需规划，校验 action，执行白名单内的诊断工具，记录 trace，然后持续循环，直到 provider 返回最终诊断。除显式配置的 `smoke_run` 外，工具均为只读；`smoke_run` 是受恢复限制的合成事务。
 
 ## 模块
 
@@ -8,7 +8,8 @@
 - `cmd/sre-agent/diagnose.go`: start/resume orchestration, task deadline, and run checkpoint wiring.
 - `cmd/sre-agent/run.go`: terminal run persistence, status lookup, and report reload.
 - `cmd/sre-agent/commands.go`: CLI flag parsing, exit handling, and output.
-- `cmd/sre-agent/interactive*.go`: 默认 `sre` 逐行交互入口、会话状态、局部命令分派、进度渲染和取消处理；它直接复用诊断、运行、会话、记忆和评测应用函数，不通过子进程再次调用 CLI。
+- `cmd/sre-agent/interactive*.go`: 保留的 `--plain` 逐行交互、会话状态和命令分派。
+- `cmd/sre-agent/tui.go` 与 `internal/tui`: 将现有诊断、恢复、记忆和命令能力接入终端事件循环，渲染单列对话、工具进度、选择器和详情视图；后台任务只向 TUI 发送消息。
 - `cmd/sre-agent/memory_command.go`: 固定 `memories/` 根目录的收录、检索、重建和生命周期命令。
 - `internal/agent`: runtime loop, state, prompt boundary, execution boundary.
 - `internal/llm`: provider interface, action planner, generic chat types/config, mock provider, OpenAI-compatible/Ollama client, and Anthropic Messages client.
@@ -34,7 +35,7 @@
 
 ## 交互入口
 
-`sre` 无子命令时仅在终端标准输入下进入交互会话；管道或重定向会提示使用脚本子命令并退出。交互状态保存当前配置、环境、会话 ID、最近 run ID 和任务状态，终端文案不是状态来源。普通文本创建新 run，`/` 命令由本地解析器处理；历史会话和跨会话 memory 仍由同一诊断路径按预算自动加载与收录。进度事件写入 stderr，报告与结构化状态写入 stdout，二者共享安全的终端渲染边界。
+`sre` 无子命令且 stdin、stdout 都是可用终端时，默认进入全屏 TUI；`--plain` 使用逐行交互。输入被重定向时会提示使用脚本子命令并退出。普通文本创建新 run，`/` 命令由本地解析器处理；历史会话和跨会话记忆沿用同一诊断路径按预算自动加载与收录。Runtime 发布结构化进度事件，TUI 在单一事件循环中更新视图，后台任务不直接向终端打印；非交互子命令仍将进度写入 stderr、报告与结构化状态写入 stdout。
 
 ## 安全边界
 
@@ -47,7 +48,7 @@
 - Runtime rejects final evidence whose step/tool pair does not exist in the current trace, and keeps check execution status separate from target health.
 - `identified` root causes require a supported fault type and its minimum structured evidence; `suspected` conclusions require both support and pending verification.
 - Tool execution errors are preserved as LLM-facing observations instead of terminating the runtime loop.
-- Runtime publishes structured progress events. The CLI renders those events to stderr, while reports and machine-readable output remain on stdout.
+- Runtime publishes structured progress events. The TUI consumes them in its event loop; non-interactive commands render progress to stderr and reports or machine-readable output to stdout.
 - 跨会话索引采用原子替换和短时写锁；索引故障不会删除已经保存的 run，且历史 Markdown 不能改变 system、工具或证据策略。
 - `log_read` only reads files under configured allowed directories.
 - `http_check` body snippets and `log_read` lines redact common password/token/api_key/secret values before they become observations.

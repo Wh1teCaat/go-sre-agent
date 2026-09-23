@@ -25,6 +25,9 @@ reports/
 traces/
 .runs/
 .sessions/
+.demo-runs/
+.demo-sessions/
+.demo-reports/
 memories/
 evals/results/
 # 本地交互或手工演示生成的示例文件，不提交到仓库。
