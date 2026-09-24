@@ -10,9 +10,18 @@ import (
 
 type Config struct {
 	Agent   AgentConfig
+	Memory  MemoryConfig
 	Paths   PathsConfig
 	Policy  PolicyConfig
 	Targets TargetConfig
+}
+
+type MemoryConfig struct {
+	ModelEnabled       bool
+	ExtractModel       string
+	ConsolidationModel string
+	Timeout            time.Duration
+	RoundLimit         int
 }
 
 type AgentConfig struct {
@@ -71,6 +80,13 @@ type TargetConfig struct {
 }
 
 type rawConfig struct {
+	Memory struct {
+		ModelEnabled       bool   `yaml:"model_enabled"`
+		ExtractModel       string `yaml:"extract_model"`
+		ConsolidationModel string `yaml:"consolidation_model"`
+		Timeout            string `yaml:"timeout"`
+		RoundLimit         int    `yaml:"round_limit"`
+	} `yaml:"memory"`
 	Agent struct {
 		MaxSteps              int    `yaml:"max_steps"`
 		LLMTimeout            string `yaml:"llm_timeout"`
@@ -120,6 +136,7 @@ type rawConfig struct {
 // 生产或项目特定目标应通过 config.yaml 或 CLI 参数覆盖。
 func Default() Config {
 	return Config{
+		Memory: MemoryConfig{Timeout: 30 * time.Second, RoundLimit: 2},
 		Agent: AgentConfig{
 			MaxSteps:              12,
 			LLMTimeout:            30 * time.Second,
@@ -216,6 +233,22 @@ func Load(path string) (Config, error) {
 	}
 
 	cfg := Default()
+	cfg.Memory.ModelEnabled = raw.Memory.ModelEnabled
+	cfg.Memory.ExtractModel = raw.Memory.ExtractModel
+	cfg.Memory.ConsolidationModel = raw.Memory.ConsolidationModel
+	if raw.Memory.Timeout != "" {
+		duration, err := time.ParseDuration(raw.Memory.Timeout)
+		if err != nil || duration <= 0 {
+			return Config{}, fmt.Errorf("memory.timeout must be a positive duration")
+		}
+		cfg.Memory.Timeout = duration
+	}
+	if raw.Memory.RoundLimit < 0 {
+		return Config{}, fmt.Errorf("memory.round_limit must not be negative")
+	}
+	if raw.Memory.RoundLimit > 0 {
+		cfg.Memory.RoundLimit = raw.Memory.RoundLimit
+	}
 	// 配置文件采用“局部覆盖”语义：只写需要调整的字段即可，
 	// 未写字段继续沿用 Default，避免示例配置必须复制完整结构。
 	if raw.Agent.MaxSteps > 0 {

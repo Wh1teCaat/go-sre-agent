@@ -66,7 +66,9 @@ flowchart TD
 
 **检查与结论分开。** 每条工具记录都保留执行状态、目标健康状态、目标身份、时间和脱敏后的结构化事实。模型可以提出诊断，但引用的证据必须能在本次 Trace 中找到。根因通过 `identified`、`suspected`、`undetermined` 表示结论强度；证据不足时不会把猜测写成已确认事实。TUI 的简短健康判断也只使用本次检查，无法判断时显示 `Unverified`。
 
-**历史与当前证据分开。** 诊断会自动加载当前会话上下文，并按服务、环境和目标检索跨会话记忆，最多取 3 条、总计 12 KiB。TUI 显示的命中数量来自实际注入模型的同一批结果。历史可帮助决定下一步检查，不能代替本次证据；新建会话后仍可检索同范围的历史。符合条件的 Run 会自动收录，无需先执行 `/memory`，主回复也不会显示收录流程。
+**历史与当前证据分开。** 诊断会自动加载当前会话上下文，并按服务、环境和目标检索跨会话记忆，最多取 3 条、总计 12 KiB。TUI 显示的命中数量来自实际注入模型的同一批结果。历史可帮助决定下一步检查，不能代替本次证据；新建会话后仍可检索同范围的历史。符合条件的 Run 会自动收录，无需先执行 `/memory`。TUI 的诊断主回复不显示收录结果，也不会在退出会话时生成记忆总结。
+
+**模型记忆是可选的后续整理。** Run 和会话保存后，程序先确定性生成 `rollout_summaries/` 与三个 Markdown 索引；启用 `memory.model_enabled` 后，模型再把单个 Run 的候选经验写入 `extractions/`，按同一服务和环境把多个有效提取写入 `consolidations/`。程序校验来源、摘要与生命周期状态后重建索引。模型不直接编辑 Markdown，过期产物不会进入检索，`.runs/` 仍是事实来源。交互模式由后台 worker 扫描待办，脚本模式可运行 `memory process`；`memory rebuild` 只做离线重建，不调用模型。详见 [跨会话记忆](docs/cross-session-memory.md)。
 
 **执行过程可以恢复。** 每次模型和工具调用都有持久化状态；独立的只读工具可有限并行，并用 `call_id` 关联结果。Ctrl-C 会请求取消并等待保存。恢复时，已中断调用不会被当作成功；若存在结果未知的有副作用调用，自动恢复会受限。大工具输出可以在模型上下文中按预算裁剪，完整脱敏证据仍保留在 Run/Trace 中。详见 [运行恢复](docs/run-recovery.md)、[上下文与进度](docs/runtime-context-progress.md) 和 [证据约束](docs/evidence-constraints.md)。
 
@@ -79,7 +81,7 @@ cp configs/config.example.yaml configs/config.yaml
 cp .env.example .env
 ```
 
-- 在 `configs/config.yaml` 设置服务与环境标签、目标地址、允许访问的主机、日志目录、容器和工具。`targets.service` 与 `targets.environment` 也是跨会话记忆的隔离范围。
+- 在 `configs/config.yaml` 设置服务与环境标签、目标地址、允许访问的主机、日志目录、容器和工具。`targets.service` 与 `targets.environment` 也是跨会话记忆的隔离范围。模型记忆缺省关闭；需要后台提取与整合时设置 `memory.model_enabled: true`，可分别指定 `extract_model` 和 `consolidation_model`，留空时使用当前 LLM provider 的模型。
 - 在 `.env` 设置 `SRE_AGENT_LLM_PROVIDER` 及对应模型的地址、名称和凭据。支持 OpenAI-compatible、Ollama 和 Anthropic；变量示例见 [.env.example](.env.example)。
 - 如需不同配置路径，启动时传 `--config`。完整配置字段见 [通用示例](configs/config.example.yaml)；本机 Go Chat Compose 可参考 [专用示例](configs/go-chat-compose.example.yaml)。
 
@@ -99,9 +101,12 @@ stdin 和 stdout 都是可用终端时，`./sre` 默认进入 TUI。终端不支
 ./sre status --run-id <run_id>
 ./sre report --run-id <run_id>
 ./sre resume --run-id <run_id>
+./sre memory process --config configs/config.yaml --dry-run
+./sre memory process --config configs/config.yaml --limit 2
+./sre memory rebuild --config configs/config.yaml
 ```
 
-`diagnose` 的报告会写到终端；配置 `paths.report_dir` 后也会保存为 Markdown。运行状态默认保存在 `.runs/`，会话状态默认保存在 `.sessions/`。非交互子命令继续使用原有输出格式和退出码；`--plain` 保留逐行交互。常用的其他入口包括 `llm ping|chat`、`memory search|collect|rebuild|invalidate|correct|delete` 和 `eval mock|model`。完整参数见 `./sre --help`、[交互式 CLI](docs/interactive-cli.md)、[跨会话记忆](docs/cross-session-memory.md) 与 [评测说明](docs/evaluations.md)。
+`diagnose` 的报告会写到终端；配置 `paths.report_dir` 后也会保存为 Markdown。运行状态默认保存在 `.runs/`，会话状态默认保存在 `.sessions/`。非交互子命令继续使用原有输出格式和退出码；`--plain` 保留逐行交互。常用的其他入口包括 `llm ping|chat`、`memory search|collect|process|rebuild|invalidate|correct|delete` 和 `eval mock|model`。完整参数见 `./sre --help`、[交互式 CLI](docs/interactive-cli.md)、[跨会话记忆](docs/cross-session-memory.md) 与 [评测说明](docs/evaluations.md)。
 
 > **Mock 场景的区别：** `tui-demo` 使用本地模拟工具，适合完全离线体验。`login-500`、`dependency-check` 和 `websocket` 使用预设动作，但仍会调用配置中的真实诊断目标；不要把它们当作离线演示。
 
@@ -129,4 +134,4 @@ go test ./...
 go vet ./...
 ```
 
-当前跨会话检索使用服务、环境和固定关键词，还没有向量检索；动态检查建议主要由模型生成。Run 历史增长后的存储迁移和更多故障注入样本仍是后续工作。
+当前跨会话检索使用服务、环境和固定关键词；可选模型负责提取与整合历史经验，检索仍不是向量检索。动态检查建议主要由模型生成。Run 历史增长后的存储迁移和更多故障注入样本仍是后续工作。

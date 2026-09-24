@@ -126,7 +126,7 @@ func executeDiagnosisRun(ctx context.Context, opts diagnoseOptions, runID string
 		return diagnoseResult{RunDir: cfg.RunDir, SessionDir: cfg.SessionDir, Service: cfg.Service, MemoryDir: cfg.MemoryDir, Environment: cfg.Environment, OverwriteSessionMemory: cfg.OverwriteSessionMemory, ReportDir: cfg.ReportDir}, err
 	}
 	if cfg.MemoryDir != "" {
-		history, err := memory.NewStore(cfg.MemoryDir).Hints(memory.Query{
+		history, err := memory.NewStore(cfg.MemoryDir).WithRunDir(cfg.RunDir).Hints(memory.Query{
 			Service:     cfg.Service,
 			Environment: cfg.Environment,
 			Goal:        cfg.Goal,

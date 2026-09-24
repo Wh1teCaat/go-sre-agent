@@ -1,12 +1,15 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
 	"strings"
+	"time"
 
+	"github.com/y2/go-sre-agent/internal/llm"
 	memory "github.com/y2/go-sre-agent/internal/memory"
 	runstore "github.com/y2/go-sre-agent/internal/run"
 )
@@ -19,6 +22,8 @@ func runMemoryCommand(args []string, stdout, stderr io.Writer) int {
 		return 2
 	}
 	switch args[0] {
+	case "process":
+		return runMemoryProcessCommand(args[1:], stdout, stderr)
 	case "rebuild":
 		return runMemoryRebuildCommand(args[1:], stdout, stderr)
 	case "collect":
@@ -43,6 +48,8 @@ func runMemoryRebuildCommand(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("memory rebuild", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 	overwrite := fs.Bool("overwrite-generated", false, "explicitly replace manually changed generated index files")
+	configPath := fs.String("config", "", "config file path")
+	runDir := fs.String("run-dir", "", "saved run directory")
 	if err := fs.Parse(args); err != nil {
 		fmt.Fprintln(stderr, err)
 		return 2
@@ -51,7 +58,19 @@ func runMemoryRebuildCommand(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "unexpected memory rebuild argument %q\n", fs.Arg(0))
 		return 2
 	}
-	store := memory.NewStore(memory.DefaultDir)
+	dir := *runDir
+	if dir == "" && *configPath == "" {
+		dir = ".runs"
+	}
+	if dir == "" {
+		var err error
+		dir, err = resolveRunDir(*configPath, "")
+		if err != nil {
+			fmt.Fprintln(stderr, err)
+			return 1
+		}
+	}
+	store := memory.NewStore(memory.DefaultDir).WithRunDir(dir)
 	var err error
 	if *overwrite {
 		err = store.RebuildForce()
@@ -97,7 +116,7 @@ func runMemoryCollectCommand(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, err)
 		return 1
 	}
-	store := memory.NewStore(memory.DefaultDir)
+	store := memory.NewStore(memory.DefaultDir).WithRunDir(dir)
 	var collected bool
 	if *overwrite {
 		collected, err = store.UpdateForRunForce(state)
@@ -139,7 +158,12 @@ func runMemorySearchCommand(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, err)
 		return 1
 	}
-	matches, err := memory.NewStore(memory.DefaultDir).Search(memory.Query{
+	dir, err := resolveRunDir(*configPath, "")
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return 1
+	}
+	matches, err := memory.NewStore(memory.DefaultDir).WithRunDir(dir).Search(memory.Query{
 		Service:     resolvedService,
 		Environment: resolvedEnvironment,
 		Goal:        *goal,
@@ -256,4 +280,113 @@ func fillLegacyMemoryScope(state runstore.State, configPath string) (runstore.St
 	state.Service = service
 	state.Environment = environment
 	return state, nil
+}
+
+// runMemoryProcessCommand processes derived work with the configured provider.
+func runMemoryProcessCommand(args []string, stdout, stderr io.Writer) int {
+	fs := flag.NewFlagSet("memory process", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	configPath := fs.String("config", "", "config file")
+	runDir := fs.String("run-dir", "", "saved run directory")
+	runID := fs.String("run-id", "", "process one run and its scope")
+	limit := fs.Int("limit", 0, "maximum model tasks")
+	timeout := fs.Duration("timeout", 0, "timeout for each model request")
+	dryRun := fs.Bool("dry-run", false, "report pending tasks without model calls")
+	if err := fs.Parse(args); err != nil {
+		fmt.Fprintln(stderr, err)
+		return 2
+	}
+	if fs.NArg() != 0 {
+		fmt.Fprintln(stderr, "unexpected memory process argument")
+		return 2
+	}
+	cfg, err := loadAppConfig(*configPath)
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return 1
+	}
+	if *runDir == "" {
+		*runDir = cfg.Paths.RunDir
+	}
+	if *limit == 0 {
+		*limit = cfg.Memory.RoundLimit
+	}
+	if *limit < 0 {
+		fmt.Fprintln(stderr, "--limit must be positive")
+		return 2
+	}
+	if *timeout == 0 {
+		*timeout = cfg.Memory.Timeout
+	}
+	if *timeout <= 0 {
+		fmt.Fprintln(stderr, "--timeout must be positive")
+		return 2
+	}
+	var client llm.ChatClient
+	var provider llm.Config
+	if !*dryRun {
+		provider, err = loadLLMConfig()
+		if err == nil {
+			client, err = newChatClient(provider)
+		}
+		if err != nil {
+			fmt.Fprintln(stderr, err)
+			return 1
+		}
+	}
+	extractModel := cfg.Memory.ExtractModel
+	if extractModel == "" {
+		extractModel = provider.Model
+	}
+	consolidationModel := cfg.Memory.ConsolidationModel
+	if consolidationModel == "" {
+		consolidationModel = provider.Model
+	}
+	ctx, cancel := commandContext()
+	defer cancel()
+	stats, err := memory.NewStore(memory.DefaultDir).WithRunDir(*runDir).Process(ctx, client, memory.ProcessOptions{RunDir: *runDir, ExtractModel: extractModel, ConsolidationModel: consolidationModel, Timeout: *timeout, Limit: *limit, RunID: *runID, DryRun: *dryRun})
+	fmt.Fprintf(stdout, "success=%d skipped=%d stale=%d failed=%d\n", stats.Success, stats.Skipped, stats.Stale, stats.Failed)
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return 1
+	}
+	if stats.Failed > 0 {
+		return 1
+	}
+	return 0
+}
+
+// processAfterDiagnosis is best effort; a memory model failure does not change diagnosis status.
+func processAfterDiagnosis(configPath, runDir, runID string, stderr io.Writer) {
+	cfg, err := loadAppConfig(configPath)
+	if err != nil || !cfg.Memory.ModelEnabled {
+		return
+	}
+	provider, err := loadLLMConfig()
+	if err != nil {
+		fmt.Fprintf(stderr, "memory process: %v\n", err)
+		return
+	}
+	client, err := newChatClient(provider)
+	if err != nil {
+		fmt.Fprintf(stderr, "memory process: %v\n", err)
+		return
+	}
+	extractModel := cfg.Memory.ExtractModel
+	if extractModel == "" {
+		extractModel = provider.Model
+	}
+	consolidationModel := cfg.Memory.ConsolidationModel
+	if consolidationModel == "" {
+		consolidationModel = provider.Model
+	}
+	if runDir == "" {
+		runDir = cfg.Paths.RunDir
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(cfg.Memory.RoundLimit)*cfg.Memory.Timeout)
+	defer cancel()
+	stats, err := memory.NewStore(memory.DefaultDir).WithRunDir(runDir).Process(ctx, client, memory.ProcessOptions{RunDir: runDir, RunID: runID, ExtractModel: extractModel, ConsolidationModel: consolidationModel, Timeout: cfg.Memory.Timeout, Limit: cfg.Memory.RoundLimit})
+	if err != nil || stats.Failed > 0 {
+		fmt.Fprintf(stderr, "memory process deferred: %d failed; %v\n", stats.Failed, err)
+	}
 }

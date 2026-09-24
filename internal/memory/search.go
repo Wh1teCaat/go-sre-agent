@@ -74,7 +74,7 @@ func (s *Store) Search(query Query) ([]Match, error) {
 			if document.CollectionStatus != CollectionActive || !matchesScope(document, query) {
 				continue
 			}
-			content := renderHint(document)
+			content := renderHint(document) + s.modelHint(document)
 			if usedBytes+len(content) > query.MaxBytes {
 				remaining := query.MaxBytes - usedBytes
 				if remaining < 256 {

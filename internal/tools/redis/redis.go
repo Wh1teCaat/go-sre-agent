@@ -22,7 +22,7 @@ type Args struct {
 
 type Tool struct{}
 
-func New() *Tool { return &Tool{} }
+func NewPing() *Tool { return &Tool{} }
 
 func (t *Tool) Spec() tools.ToolSpec {
 	return tools.ToolSpec{

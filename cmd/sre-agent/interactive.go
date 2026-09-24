@@ -89,6 +89,7 @@ type interactiveCLI struct {
 	runStore       *runstore.Store
 	sessionStore   *sessionstore.Store
 	memoryStore    *memory.Store
+	memoryWorker   *memoryWorker
 }
 
 // runInteractive 创建逐行终端会话。调用方负责判断 stdin 是否为终端并注册进程信号。
@@ -97,6 +98,10 @@ func runInteractive(options interactiveOptions) error {
 	if err != nil {
 		return err
 	}
+	if err := cli.beginMemoryWorker(); err != nil {
+		return err
+	}
+	defer cli.memoryWorker.Stop()
 	cli.printBanner()
 	return cli.loop()
 }
@@ -256,6 +261,10 @@ func (c *interactiveCLI) loop() error {
 			}
 			fmt.Fprintln(c.output, "^C")
 			continue
+		case status := <-c.memoryEvents():
+			if status != "" {
+				fmt.Fprintln(c.output, status)
+			}
 		case line, ok := <-lines:
 			if !ok {
 				fmt.Fprintln(c.output, "")
@@ -438,4 +447,20 @@ func (c *interactiveCLI) runTask(action func(context.Context)) bool {
 	default:
 	}
 	return false
+}
+
+func (c *interactiveCLI) memoryEvents() <-chan string {
+	if c.memoryWorker == nil {
+		return nil
+	}
+	return c.memoryWorker.events
+}
+
+func (c *interactiveCLI) notifyMemoryForPersistedRun(runID string) {
+	if runID == "" || c.memoryWorker == nil {
+		return
+	}
+	if _, err := c.runStore.Load(runID); err == nil {
+		c.memoryWorker.Notify()
+	}
 }

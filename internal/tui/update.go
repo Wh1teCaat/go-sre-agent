@@ -7,6 +7,14 @@ import (
 )
 
 func (m Model) key(k tea.KeyMsg) (tea.Model, tea.Cmd) {
+	bulkText := k.Type == tea.KeyRunes && (k.Paste || strings.ContainsAny(string(k.Runes), "\r\n"))
+	if bulkText {
+		// Bulk text may arrive without a paste flag; ignore only its trailing line breaks.
+		k.Runes = []rune(strings.TrimRight(string(k.Runes), "\r\n"))
+		if len(k.Runes) == 0 {
+			return m, nil
+		}
+	}
 	switch k.String() {
 	case "esc":
 		if m.commandBusy {
@@ -23,6 +31,7 @@ func (m Model) key(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if m.overlay != "" {
 			m.closeOverlay()
 			m.input.Reset()
+			m.resize()
 			return m, nil
 		}
 		if len(m.candidates) > 0 {
@@ -57,6 +66,7 @@ func (m Model) key(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		m.input.Reset()
 		m.candidates = nil
+		m.resize()
 		return m, nil
 	case "ctrl+d":
 		if !m.active && !m.commandBusy && strings.TrimSpace(m.input.Value()) == "" {
@@ -143,6 +153,7 @@ func (m Model) key(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if m.pending && k.String() == "enter" {
 		line := strings.TrimSpace(m.input.Value())
 		m.input.Reset()
+		m.resize()
 		if line == "" {
 			m.backend.CancelPending()
 			m.pending = false
@@ -159,6 +170,7 @@ func (m Model) key(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if k.String() == "tab" && len(m.candidates) > 0 {
 		m.input.SetValue(m.candidates[m.candidateIndex] + " ")
 		m.candidates = nil
+		m.resize()
 		return m, nil
 	}
 	if k.String() == "up" && !strings.Contains(m.input.Value(), "\n") && len(m.history) > 0 {
@@ -168,6 +180,7 @@ func (m Model) key(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.historyIndex--
 		}
 		m.input.SetValue(m.history[m.historyIndex])
+		m.resize()
 		return m, nil
 	}
 	if k.String() == "down" && !strings.Contains(m.input.Value(), "\n") && m.historyIndex >= 0 {
@@ -178,6 +191,7 @@ func (m Model) key(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.historyIndex = -1
 			m.input.Reset()
 		}
+		m.resize()
 		return m, nil
 	}
 	if k.String() == "enter" {
@@ -220,9 +234,19 @@ func (m Model) key(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 	var cmd tea.Cmd
 	m.input, cmd = m.input.Update(k)
+	if bulkText {
+		m.trimPastedNewline()
+	}
 	m.updateCandidates()
 	m.resize()
 	return m, cmd
+}
+
+func (m *Model) trimPastedNewline() {
+	value := m.input.Value()
+	if trimmed := strings.TrimRight(value, "\r\n"); trimmed != value {
+		m.input.SetValue(trimmed)
+	}
 }
 func (m *Model) updateCandidates() {
 	s := strings.TrimSpace(m.input.Value())

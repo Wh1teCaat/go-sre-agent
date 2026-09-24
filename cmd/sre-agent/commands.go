@@ -75,6 +75,7 @@ func runDiagnoseCommand(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, err)
 		return 1
 	}
+	processAfterDiagnosis(*configPath, result.RunDir, result.State.RunID, stderr)
 	fmt.Fprintf(stderr, "run_id: %s\n", result.State.RunID)
 	if result.State.SessionID != "" {
 		fmt.Fprintf(stderr, "session_id: %s\n", result.State.SessionID)

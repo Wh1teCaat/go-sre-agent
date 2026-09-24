@@ -1,3 +1,12 @@
+# 默认关闭；启用后诊断保存仍先完成确定性记忆，模型处理可稍后重试。
+memory:
+  model_enabled: true
+  # 留空时使用当前 LLM provider 的默认模型；两阶段可以使用同一模型。
+  extract_model: ""
+  consolidation_model: ""
+  timeout: 30s
+  round_limit: 2
+
 agent:
   max_steps: 12
   llm_timeout: 30s

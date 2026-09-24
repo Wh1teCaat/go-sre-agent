@@ -66,6 +66,7 @@ type doneMsg struct {
 type commandMsg struct{ result CommandResult }
 type tickMsg time.Time
 type terminateMsg struct{}
+type memoryStatusMsg string
 
 type check struct {
 	key, tool, summary, err string
@@ -123,6 +124,7 @@ func New(backend Backend) Model {
 	in.Placeholder = "Ask about a service or type /command"
 	in.Prompt = "> "
 	in.ShowLineNumbers = false
+	in.FocusedStyle.CursorLine = in.FocusedStyle.Text
 	in.SetHeight(1)
 	in.Focus()
 	v := viewport.New(80, 16)
@@ -143,6 +145,10 @@ func (m Model) Init() tea.Cmd { return textarea.Blink }
 
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch x := msg.(type) {
+	case memoryStatusMsg:
+		m.notice = safe(string(x))
+		m.refresh()
+		return m, nil
 	case terminateMsg:
 		if m.active || m.commandBusy {
 			m.exitAfterCancel = true
@@ -238,8 +244,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.key(x)
 	}
 	if m.overlay == "" {
+		before := m.input.Value()
 		var cmd tea.Cmd
 		m.input, cmd = m.input.Update(msg)
+		if m.input.Value() != before {
+			// textarea's Ctrl-V clipboard command returns a separate paste message.
+			m.trimPastedNewline()
+			m.resize()
+		}
 		return m, cmd
 	}
 	return m, nil
@@ -404,6 +416,7 @@ func (m *Model) start(goal string) tea.Cmd {
 	m.appendMessage("user", goal)
 	m.input.Reset()
 	m.candidates = nil
+	m.resize()
 	m.history = append(m.history, goal)
 	m.historyIndex = -1
 	return tea.Batch(tick(), m.listen(), func() tea.Msg {
@@ -438,6 +451,7 @@ func (m *Model) startResume(runID string, resumeRunning bool) tea.Cmd {
 	m.pendingResumeID = ""
 	m.pendingResumeRunning = false
 	m.input.Reset()
+	m.resize()
 	m.overlay = ""
 	m.overlayTitle = ""
 	m.appendMessage("system", "Resuming run "+runID+"…")
@@ -457,6 +471,7 @@ func (m *Model) startResume(runID string, resumeRunning bool) tea.Cmd {
 func (m *Model) command(line string) tea.Cmd {
 	m.input.Reset()
 	m.candidates = nil
+	m.resize()
 	m.commandBusy = true
 	m.commandStarted = time.Now()
 	m.notice = ""
@@ -470,6 +485,23 @@ func Run(backend Backend, input io.Reader, output io.Writer) error {
 	signal.Notify(terminating, os.Interrupt, syscall.SIGTERM)
 	defer signal.Stop(terminating)
 	stopped := make(chan struct{})
+	if source, ok := backend.(interface{ MemoryEvents() <-chan string }); ok {
+		if events := source.MemoryEvents(); events != nil {
+			go func() {
+				for {
+					select {
+					case <-stopped:
+						return
+					case status, open := <-events:
+						if !open {
+							return
+						}
+						p.Send(memoryStatusMsg(status))
+					}
+				}
+			}()
+		}
+	}
 	go func() {
 		select {
 		case <-terminating:

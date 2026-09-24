@@ -4,8 +4,11 @@ import (
 	"fmt"
 	"strings"
 	"time"
+	"unicode"
 
+	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 )
 
 var (
@@ -23,16 +26,18 @@ func (m Model) squareSpinnerMark() string {
 
 func (m *Model) resize() {
 	w := max(1, m.width)
-	inputHeight := 1
-	if m.height < 8 {
-		inputHeight = 1
-	}
-	if m.height >= 8 && strings.Contains(m.input.Value(), "\n") {
-		inputHeight = min(6, 1+strings.Count(m.input.Value(), "\n"))
-	}
+	previousWidth, previousHeight := m.input.Width(), m.input.Height()
 	m.input.SetWidth(max(1, w-2))
-	m.input.SetHeight(inputHeight)
 	candidateHeight := min(5, len(m.candidates))
+	inputHeight := 1
+	if m.height >= 8 {
+		available := max(1, m.height-6-candidateHeight)
+		inputHeight = min(6, available, inputRows(m.input.Value(), m.input.Width()))
+	}
+	m.input.SetHeight(inputHeight)
+	if m.input.Width() != previousWidth || inputHeight != previousHeight {
+		m.repositionInput()
+	}
 	h := m.height - 5 - inputHeight - candidateHeight
 	if m.height < 8 {
 		h = m.height - 2 - inputHeight
@@ -44,6 +49,72 @@ func (m *Model) resize() {
 	m.viewport.Height = h
 	m.refresh()
 }
+
+// textarea keeps its old scroll offset when SetHeight grows the viewport.
+// Rebuild it at the new size, then restore the draft cursor before rendering.
+func (m *Model) repositionInput() {
+	value := m.input.Value()
+	line := m.input.Line()
+	info := m.input.LineInfo()
+	column := info.StartColumn + info.ColumnOffset
+	m.input.SetValue(value)
+	for steps := 0; m.input.Line() > line && steps <= len([]rune(value)); steps++ {
+		m.input.CursorUp()
+	}
+	m.input.SetCursor(column)
+	_ = m.input.View()
+	m.input, _ = m.input.Update(tea.KeyMsg{})
+}
+
+func inputRows(value string, width int) int {
+	if width < 1 {
+		return 1
+	}
+	rows := 0
+	for _, line := range strings.Split(value, "\n") {
+		rows += wrappedInputRows(line, width)
+		if rows >= 6 {
+			return 6
+		}
+	}
+	return max(1, rows)
+}
+
+// Match textarea's word wrapping, including its extra cursor row at an exact edge.
+func wrappedInputRows(line string, width int) int {
+	rows, lineWidth := 1, 0
+	word := make([]rune, 0, len(line))
+	spaces := 0
+	for _, r := range line {
+		if unicode.IsSpace(r) {
+			spaces++
+		} else {
+			word = append(word, r)
+		}
+		if spaces > 0 {
+			wordWidth := ansi.StringWidth(string(word))
+			if lineWidth+wordWidth+spaces > width {
+				rows++
+				lineWidth = wordWidth + spaces
+			} else {
+				lineWidth += wordWidth + spaces
+			}
+			word = word[:0]
+			spaces = 0
+		} else if len(word) > 0 && ansi.StringWidth(string(word))+ansi.StringWidth(string(word[len(word)-1])) > width {
+			if lineWidth > 0 {
+				rows++
+			}
+			lineWidth = ansi.StringWidth(string(word))
+			word = word[:0]
+		}
+	}
+	if lineWidth+ansi.StringWidth(string(word))+spaces >= width {
+		rows++
+	}
+	return rows
+}
+
 func (m *Model) refresh() {
 	follow := m.viewport.AtBottom() || m.viewport.TotalLineCount() == 0
 	var body strings.Builder

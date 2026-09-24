@@ -10,14 +10,14 @@
 - `cmd/sre-agent/commands.go`: CLI flag parsing, exit handling, and output.
 - `cmd/sre-agent/interactive*.go`: 保留的 `--plain` 逐行交互、会话状态和命令分派。
 - `cmd/sre-agent/tui.go` 与 `internal/tui`: 将现有诊断、恢复、记忆和命令能力接入终端事件循环，渲染单列对话、工具进度、选择器和详情视图；后台任务只向 TUI 发送消息。
-- `cmd/sre-agent/memory_command.go`: 固定 `memories/` 根目录的收录、检索、重建和生命周期命令。
+- `cmd/sre-agent/memory_command.go` 与 `memory_worker.go`: 固定 `memories/` 根目录的处理、检索、重建和生命周期命令；交互模式在后台逐项处理模型记忆。
 - `internal/agent`: runtime loop, state, prompt boundary, execution boundary.
 - `internal/llm`: provider interface, action planner, generic chat types/config, mock provider, OpenAI-compatible/Ollama client, and Anthropic Messages client.
 - `internal/tools`: tool interface, registry, tool specs, and concrete tool packages.
 - `internal/policy`: action、计划、结构化证据、根因约束、工具白名单和参数 schema 校验。
 - `internal/trace`: per-step execution trace storage.
 - `internal/report`: markdown report generation from diagnosis and trace evidence.
-- `internal/memory`: 从已保存 run 确定性生成跨会话复盘、主题索引和受预算限制的历史提示。
+- `internal/memory`: 从已保存 run 确定性生成复盘和索引；可选模型提取单次候选经验、按服务与环境整合，校验来源及摘要后提供受预算限制的历史提示。
 - `internal/schema`: structured action, observation, evidence, and diagnosis types.
 
 ## Runtime Loop
@@ -37,6 +37,8 @@
 
 `sre` 无子命令且 stdin、stdout 都是可用终端时，默认进入全屏 TUI；`--plain` 使用逐行交互。输入被重定向时会提示使用脚本子命令并退出。普通文本创建新 run，`/` 命令由本地解析器处理；历史会话和跨会话记忆沿用同一诊断路径按预算自动加载与收录。Runtime 发布结构化进度事件，TUI 在单一事件循环中更新视图，后台任务不直接向终端打印；非交互子命令仍将进度写入 stderr、报告与结构化状态写入 stdout。
 
+终态 Run 先保存到 `.runs/`，再同步更新会话与确定性跨会话复盘。若模型记忆开启，TUI worker 启动时扫描待办、保存新 Run 后接收通知；提取与整合调用期间只持有单项租约，提交时才短时锁住索引并复核输入摘要。worker 通过事件通道报告状态，退出时取消模型请求。`sre memory process` 使用同一处理器；`sre memory rebuild` 仅读取可验证的落盘结果。
+
 ## 安全边界
 
 - Runtime enforces max steps and per-tool timeout.
@@ -49,7 +51,7 @@
 - `identified` root causes require a supported fault type and its minimum structured evidence; `suspected` conclusions require both support and pending verification.
 - Tool execution errors are preserved as LLM-facing observations instead of terminating the runtime loop.
 - Runtime publishes structured progress events. The TUI consumes them in its event loop; non-interactive commands render progress to stderr and reports or machine-readable output to stdout.
-- 跨会话索引采用原子替换和短时写锁；索引故障不会删除已经保存的 run，且历史 Markdown 不能改变 system、工具或证据策略。
+- 跨会话索引采用原子替换和短时写锁；模型提取与整合文件含来源摘要并按当前 Run、服务、环境及生命周期复核，过期内容不注入。索引故障不会删除已保存的 Run，历史材料不能改变 system、工具或证据策略。
 - `log_read` only reads files under configured allowed directories.
 - `http_check` body snippets and `log_read` lines redact common password/token/api_key/secret values before they become observations.
 - `http_check` and `websocket_check` reject URLs whose host is not in configured `allowed_hosts`.

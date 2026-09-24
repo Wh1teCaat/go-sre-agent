@@ -59,7 +59,7 @@ func buildToolRegistry(cfg diagnoseOptions) (*tools.Registry, error) {
 		logread.New(cfg.AllowedLogDirs, 1000),
 		postgres.NewPing(),
 		postgres.NewCheck(),
-		redis.New(),
+		redis.NewPing(),
 		redis.NewCheck(),
 		redis.NewScan(cfg.RedisKeyPrefixes),
 		kafka.NewCheck(),

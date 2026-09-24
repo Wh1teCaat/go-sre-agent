@@ -29,7 +29,8 @@ const (
 
 // Store 管理 memories 根目录。写入操作通过进程间锁和单文件原子替换保护。
 type Store struct {
-	dir string
+	dir    string
+	runDir string
 }
 
 // Query 限制跨会话检索范围和上下文大小。Service、Environment 为空时表示不限定该
@@ -132,8 +133,16 @@ func NewStore(dir string) *Store {
 	if strings.TrimSpace(dir) == "" {
 		dir = DefaultDir
 	}
-	return &Store{dir: dir}
+	return &Store{dir: dir, runDir: ".runs"}
 }
 
 // UpdateForRun 根据已保存的终态 run 更新单次复盘并重建其余索引。返回 false 表示
 // run 不具备收录条件，例如仍在运行、没有工具观察或只是空的模型失败。
+
+// WithRunDir selects the saved run source used to validate model memories.
+func (s *Store) WithRunDir(runDir string) *Store {
+	if runDir != "" {
+		s.runDir = runDir
+	}
+	return s
+}

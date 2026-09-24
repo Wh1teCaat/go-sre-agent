@@ -7,6 +7,7 @@ import (
 	"sync"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	runstore "github.com/y2/go-sre-agent/internal/run"
 	"github.com/y2/go-sre-agent/internal/schema"
@@ -287,5 +288,19 @@ func memoryTestRun(runID, service, environment, conclusionStatus string) runstor
 		},
 		CreatedAt: createdAt,
 		UpdatedAt: updatedAt,
+	}
+}
+
+func TestMemoryTextNormalizesInvalidUTF8(t *testing.T) {
+	input := "Redis " + string([]byte{0xd3, 0xc3, 0xbb, 0xa7}) + " 连接失败"
+	got := normalizedText(input, 100)
+	if !utf8.ValidString(got) {
+		t.Fatalf("normalized memory text is invalid UTF-8: %q", got)
+	}
+	if !strings.Contains(got, "�") {
+		t.Fatalf("invalid bytes were not marked: %q", got)
+	}
+	if clipped := truncateBytes("正常中文文本", 8); !utf8.ValidString(clipped) {
+		t.Fatalf("truncated memory text is invalid UTF-8: %q", clipped)
 	}
 }

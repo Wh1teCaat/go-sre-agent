@@ -208,7 +208,7 @@ func renderRolloutBody(document rolloutDocument) string {
 func renderRawBody(document rawDocument) string {
 	var content strings.Builder
 	content.WriteString("# 待整理经验汇总\n\n")
-	content.WriteString("本文件由 rollout summaries 确定性生成，不是原始工具日志，也不会整体注入模型。\n")
+	content.WriteString("本文件由已验证的复盘与有效模型提取文件确定性生成，不是原始工具日志，也不会整体注入模型。\n")
 	for _, entry := range document.Entries {
 		fmt.Fprintf(&content, "\n## %s\n\n", entry.RunID)
 		fmt.Fprintf(&content, "- 服务与环境：%s / %s\n- 故障关键词：%s\n- 结论强度：`%s`\n- 收录状态：`%s`\n- 适用条件：%s\n- 来源复盘：`rollout_summaries/%s.md`\n", markdownText(entry.Service), markdownText(entry.Environment), markdownText(strings.Join(entry.Keywords, "、")), entry.ConclusionStatus, entry.CollectionStatus, markdownText(entry.Applicability), entry.RunID)
@@ -248,7 +248,7 @@ func renderIndexBody(document indexDocument) string {
 func renderSummaryBody(document summaryDocument) string {
 	var content strings.Builder
 	content.WriteString("# 跨会话记忆导航\n\n")
-	content.WriteString("按服务、环境和关键词先定位主题，再读取 MEMORY.md 与对应 rollout summary。\n")
+	content.WriteString("按服务、环境和关键词先定位主题，再读取 MEMORY.md 与对应复盘；有效模型内容仍须回查来源 Run。\n")
 	for _, item := range document.Topics {
 		fmt.Fprintf(&content, "- `%s`：适用于 %s / %s；关键词：%s。\n", markdownText(item.Subject), markdownText(item.Service), markdownText(item.Environment), markdownText(strings.Join(item.Keywords, "、")))
 	}
@@ -285,6 +285,7 @@ func writeBulletSection(content *strings.Builder, values []string, fallback stri
 
 // normalizedText 在进入 memory 文件前再次脱敏并限制长度。
 func normalizedText(value string, limit int) string {
+	value = strings.ToValidUTF8(value, "�")
 	value = strings.Join(strings.Fields(tools.RedactSensitive(value)), " ")
 	return truncateBytes(value, limit)
 }

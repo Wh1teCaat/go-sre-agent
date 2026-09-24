@@ -28,6 +28,7 @@ func (c *interactiveCLI) runDiagnosis(goal string) bool {
 		taskErr = c.deps.saveDiagnosis(result, taskErr)
 	})
 	c.recordInteractiveResult(result)
+	c.notifyMemoryForPersistedRun(result.State.RunID)
 	if taskErr != nil {
 		c.printTaskFailure("诊断", result, taskErr)
 		return terminate
@@ -107,6 +108,7 @@ func (c *interactiveCLI) runResume(runID string, resumeRunning bool) bool {
 		taskErr = c.deps.saveDiagnosis(result, taskErr)
 	})
 	c.recordInteractiveResult(result)
+	c.notifyMemoryForPersistedRun(result.State.RunID)
 	if taskErr != nil {
 		c.printTaskFailure("恢复", result, taskErr)
 		return terminate

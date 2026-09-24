@@ -23,6 +23,10 @@ func runTUI(options interactiveOptions) error {
 	if err != nil {
 		return err
 	}
+	if err := cli.beginMemoryWorker(); err != nil {
+		return err
+	}
+	defer cli.memoryWorker.Stop()
 	return tui.Run(&tuiBackend{cli: cli}, options.Input, options.Output)
 }
 func (b *tuiBackend) Header() tui.Header {
@@ -83,6 +87,7 @@ func (b *tuiBackend) Diagnose(ctx context.Context, goal string, emit func(agent.
 	result, runErr := c.deps.startDiagnosis(ctx, opts, c.options.MockScenario)
 	collected, err := saveDiagnosisResultWithCollection(result, runErr)
 	c.recordInteractiveResult(result)
+	c.notifyMemoryForPersistedRun(result.State.RunID)
 	completion := tuiCompletion(result, c.currentSession, collected, err)
 	completion.Memories = loaded
 	completion.MemoryLoaded = memoryLoaded
@@ -103,6 +108,7 @@ func (b *tuiBackend) Resume(ctx context.Context, runID string, resumeRunning boo
 	result, runErr := c.deps.resumeDiagnosis(ctx, resumeOptions{RunID: runID, RunDir: c.config.RunDir, SessionDir: c.config.SessionDir, MemoryDir: c.config.MemoryDir, Environment: c.config.Environment, OverwriteSessionMemory: c.config.OverwriteSessionMemory, ConfigPath: c.config.ConfigPath, Progress: progress, ResumeRunning: resumeRunning}, c.options.MockScenario)
 	collected, err := saveDiagnosisResultWithCollection(result, runErr)
 	c.recordInteractiveResult(result)
+	c.notifyMemoryForPersistedRun(result.State.RunID)
 	completion := tuiCompletion(result, c.currentSession, collected, err)
 	completion.Memories = loaded
 	completion.MemoryLoaded = memoryLoaded
@@ -579,3 +585,5 @@ func tuiCommandText(value string) string {
 }
 
 func (b *tuiBackend) CancelPending() { b.cli.pending = nil }
+
+func (b *tuiBackend) MemoryEvents() <-chan string { return b.cli.memoryEvents() }

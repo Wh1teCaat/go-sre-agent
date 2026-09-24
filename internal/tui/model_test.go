@@ -200,6 +200,9 @@ func TestMultilinePasteStaysSingleDraftAndScrollDoesNotJump(t *testing.T) {
 	if !m.active || len(m.messages) != 1 || m.messages[0].Text != "第一行\n第二行" {
 		t.Fatalf("submission=%+v", m.messages)
 	}
+	if m.input.Height() != 1 {
+		t.Fatalf("submitted input height=%d", m.input.Height())
+	}
 	m.active = false
 	for i := 0; i < 20; i++ {
 		m.appendMessage("system", "一条较长的历史内容，用于使视图滚动。")
@@ -213,6 +216,186 @@ func TestMultilinePasteStaysSingleDraftAndScrollDoesNotJump(t *testing.T) {
 	m.appendMessage("system", "新的进度消息")
 	if !m.newMessages || m.viewport.YOffset != before {
 		t.Fatalf("scroll jumped: before=%d after=%d marker=%v", before, m.viewport.YOffset, m.newMessages)
+	}
+}
+
+func TestPasteAfterInitialRenderShowsContentInsteadOfPadding(t *testing.T) {
+	for _, repeat := range []int{1, 4} {
+		m := New(&fakeBackend{})
+		next, _ := m.Update(tea.WindowSizeMsg{Width: 82, Height: 20})
+		m = next.(Model)
+		_ = m.View() // Real TUI renders once before the user can paste.
+		text := strings.Repeat("也会走独立的剪贴板消息。现在这两条路径都会在输入组件接收内容后检查尾部换行；正文中的换行和手动 Ctrl+J 保留。", repeat)
+		next, _ = m.key(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(text), Paste: true})
+		m = next.(Model)
+		lines := strings.Split(m.input.View(), "\n")
+		if last := strings.TrimSpace(lines[len(lines)-1]); last == ">" || !strings.Contains(last, "保留。") {
+			t.Fatalf("repeat=%d: input padding displaced the last line: %q", repeat, m.input.View())
+		}
+		if repeat == 1 && !strings.Contains(lines[0], "也会走独立") {
+			t.Fatalf("first line was displaced: %q", m.input.View())
+		}
+	}
+}
+
+func TestResizePreservesDraftCursorPosition(t *testing.T) {
+	m := New(&fakeBackend{})
+	next, _ := m.Update(tea.WindowSizeMsg{Width: 50, Height: 20})
+	m = next.(Model)
+	_ = m.View()
+	m.input.SetValue("alpha\nbravo charlie\ndelta")
+	m.resize()
+	m.input.CursorUp()
+	m.input.SetCursor(3)
+	if m.input.Line() != 1 {
+		t.Fatalf("cursor did not move to middle line: %d", m.input.Line())
+	}
+	next, _ = m.Update(tea.WindowSizeMsg{Width: 24, Height: 20})
+	m = next.(Model)
+	if m.input.Line() != 1 || m.input.LineInfo().StartColumn+m.input.LineInfo().ColumnOffset != 3 {
+		t.Fatalf("resize moved the cursor: line=%d info=%+v", m.input.Line(), m.input.LineInfo())
+	}
+	next, _ = m.key(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("Z")})
+	m = next.(Model)
+	if m.input.Value() != "alpha\nbraZvo charlie\ndelta" {
+		t.Fatalf("typed at the wrong position: %q", m.input.Value())
+	}
+}
+
+func TestPastedTrailingNewlineDoesNotCreateBlankRow(t *testing.T) {
+	m := New(&fakeBackend{})
+	next, _ := m.Update(tea.WindowSizeMsg{Width: 82, Height: 20})
+	m = next.(Model)
+	text := "实际折行数确定高度，重新构建 TUI 后生效。\n后生效。" + strings.Repeat("1", 65) + "\n1"
+	next, _ = m.key(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(text + "\r\n\n"), Paste: true})
+	m = next.(Model)
+	if m.input.Value() != text || m.input.LineCount() != 3 {
+		t.Fatalf("paste created an extra logical line: %q", m.input.Value())
+	}
+	visible := strings.Split(m.input.View(), "\n")
+	if last := strings.TrimSpace(visible[len(visible)-1]); last != "> 1" {
+		t.Fatalf("paste left an extra visible row: %q", m.input.View())
+	}
+	if m.input.Height() != inputRows(text, m.input.Width()) {
+		t.Fatalf("input height=%d, content rows=%d", m.input.Height(), inputRows(text, m.input.Width()))
+	}
+	next, _ = m.key(tea.KeyMsg{Type: tea.KeyCtrlJ})
+	m = next.(Model)
+	if m.input.Value() != text+"\n" || m.input.Height() != inputRows(text+"\n", m.input.Width()) {
+		t.Fatalf("manual newline was lost: %q", m.input.Value())
+	}
+}
+
+func TestUnmarkedBulkTextDropsOnlyTrailingNewline(t *testing.T) {
+	m := New(&fakeBackend{})
+	next, _ := m.Update(tea.WindowSizeMsg{Width: 82, Height: 20})
+	m = next.(Model)
+	text := "找到了原因：粘贴文本末尾自带的换行符被当成新的一行，显示出多余的。\n现在多行粘贴会保留正文中的换行；手动按 Ctrl+J 仍可插入空行。"
+	next, _ = m.key(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(text + "\n")})
+	m = next.(Model)
+	if m.input.Value() != text || m.input.Height() != inputRows(text, m.input.Width()) {
+		t.Fatalf("unmarked bulk input left a blank row: value=%q height=%d", m.input.Value(), m.input.Height())
+	}
+	if last := strings.TrimSpace(strings.Split(m.input.View(), "\n")[m.input.Height()-1]); last == ">" {
+		t.Fatalf("unmarked bulk input ended with a blank prompt: %q", m.input.View())
+	}
+	next, _ = m.key(tea.KeyMsg{Type: tea.KeyCtrlJ})
+	m = next.(Model)
+	next, _ = m.Update(struct{}{})
+	m = next.(Model)
+	if m.input.Value() != text+"\n" {
+		t.Fatalf("manual newline was removed by an unrelated message: %q", m.input.Value())
+	}
+}
+
+func TestPasteLimitCannotLeaveTrailingEmptyRow(t *testing.T) {
+	m := New(&fakeBackend{})
+	next, _ := m.Update(tea.WindowSizeMsg{Width: 82, Height: 20})
+	m = next.(Model)
+	text := strings.Repeat("a", 399) + "\nmore text"
+	next, _ = m.key(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(text), Paste: true})
+	m = next.(Model)
+	if m.input.Value() != strings.Repeat("a", 399) || strings.HasSuffix(m.input.Value(), "\n") {
+		t.Fatalf("character limit left a blank row: %q", m.input.Value())
+	}
+}
+
+func TestInputRowCountMatchesTextarea(t *testing.T) {
+	m := New(&fakeBackend{})
+	lines := []string{
+		"",
+		"日志显示登录接口返回错误，需要继续检查数据库连接",
+		"running，不会收录为跨会话记忆。run 结束并保存，程序先同步生成确定性复盘，只有已结束且有工具观察的 run 才符合收录条件。随后，启用模型记忆时才会处理提取与整合：",
+		strings.Repeat("中", 10),
+		"one long word with spaces that wraps before the terminal edge",
+	}
+	for _, width := range []int{10, 24, 50, 80} {
+		m.input.SetWidth(width + 2)
+		for _, line := range lines {
+			m.input.SetValue(line)
+			want := m.input.LineInfo().Height
+			if got := wrappedInputRows(line, m.input.Width()); got != want {
+				t.Errorf("width=%d line=%q: rows=%d, textarea=%d", width, line, got, want)
+			}
+		}
+	}
+	if m.input.FocusedStyle.CursorLine.GetBackground() != m.input.FocusedStyle.Text.GetBackground() {
+		t.Fatal("cursor line background differs from the rest of the input")
+	}
+}
+
+func TestInputGrowsForWrappedTextAndShrinksAfterClear(t *testing.T) {
+	m := New(&fakeBackend{})
+	next, _ := m.Update(tea.WindowSizeMsg{Width: 24, Height: 12})
+	m = next.(Model)
+	text := "日志显示登录接口返回错误，需要继续检查数据库连接"
+	next, _ = m.key(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(text), Paste: true})
+	m = next.(Model)
+	if m.input.Height() < 2 || m.input.Height() > 6 {
+		t.Fatalf("wrapped input height=%d", m.input.Height())
+	}
+	if m.viewport.Height < 1 || !strings.Contains(m.input.View(), "日志") || !strings.Contains(m.input.View(), "连接") {
+		t.Fatalf("wrapped draft is not visible: %q", m.input.View())
+	}
+	if !strings.Contains(m.View(), "Ctrl-D Exit") {
+		t.Fatal("footer disappeared below expanded input")
+	}
+	next, _ = m.Update(tea.WindowSizeMsg{Width: 80, Height: 12})
+	m = next.(Model)
+	if m.input.Height() != 1 {
+		t.Fatalf("wide terminal input height=%d", m.input.Height())
+	}
+	next, _ = m.Update(tea.WindowSizeMsg{Width: 24, Height: 8})
+	m = next.(Model)
+	if m.input.Height() > 2 || m.viewport.Height < 1 {
+		t.Fatalf("short terminal input=%d viewport=%d", m.input.Height(), m.viewport.Height)
+	}
+	next, _ = m.key(tea.KeyMsg{Type: tea.KeyCtrlC})
+	m = next.(Model)
+	if m.input.Height() != 1 || m.input.Value() != "" {
+		t.Fatalf("clear left a tall input: height=%d value=%q", m.input.Height(), m.input.Value())
+	}
+}
+
+func TestInputHeightTracksExplicitNewlinesAndHistory(t *testing.T) {
+	m := New(&fakeBackend{})
+	next, _ := m.Update(tea.WindowSizeMsg{Width: 28, Height: 16})
+	m = next.(Model)
+	m.history = []string{"日志显示登录接口返回错误，需要继续检查数据库连接"}
+	next, _ = m.key(tea.KeyMsg{Type: tea.KeyUp})
+	m = next.(Model)
+	if m.input.Height() < 2 {
+		t.Fatalf("history input height=%d", m.input.Height())
+	}
+	next, _ = m.key(tea.KeyMsg{Type: tea.KeyDown})
+	m = next.(Model)
+	if m.input.Height() != 1 {
+		t.Fatalf("cleared history input height=%d", m.input.Height())
+	}
+	next, _ = m.key(tea.KeyMsg{Type: tea.KeyCtrlJ})
+	m = next.(Model)
+	if m.input.Height() != 2 {
+		t.Fatalf("explicit newline input height=%d", m.input.Height())
 	}
 }
 

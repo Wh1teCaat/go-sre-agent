@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -129,6 +130,12 @@ func (s *Store) rebuildLocked(force bool) error {
 	}
 	raw := rawDocument{Generation: memoryGeneration, Kind: "raw_memories"}
 	for _, document := range documents {
+		experience := append([]string(nil), document.CandidateExperience...)
+		if extraction, ok := s.validExtraction(document, s.runDir); ok {
+			for _, candidate := range extraction.Candidates {
+				experience = append(experience, "历史候选经验："+candidate.Text+"；适用条件："+candidate.Applicability)
+			}
+		}
 		raw.Entries = append(raw.Entries, rawEntry{
 			RunID:            document.RunID,
 			Service:          document.Service,
@@ -137,13 +144,31 @@ func (s *Store) rebuildLocked(force bool) error {
 			ConclusionStatus: document.ConclusionStatus,
 			CollectionStatus: document.CollectionStatus,
 			Keywords:         append([]string(nil), document.Keywords...),
-			Experience:       append([]string(nil), document.CandidateExperience...),
+			Experience:       uniqueLimited(experience, 12),
 			FailureLessons:   append([]string(nil), document.FailureLessons...),
 			Applicability:    applicabilityFor(document),
 			Source:           "rollout_summaries/" + document.RunID + ".md",
 		})
 	}
-	index := indexDocument{Generation: memoryGeneration, Kind: "memory_index", Topics: topicsFromRollouts(documents)}
+	indexTopics := topicsFromRollouts(documents)
+	scopes := map[string]bool{}
+	for _, document := range documents {
+		if document.CollectionStatus != CollectionActive {
+			continue
+		}
+		key := scopeHash(document.Service, document.Environment)
+		if scopes[key] {
+			continue
+		}
+		scopes[key] = true
+		if consolidated, ok := s.validConsolidation(documents, s.runDir, document.Service, document.Environment); ok {
+			for _, item := range consolidated.Items {
+				indexTopics = append(indexTopics, topic{Subject: document.Service + " / " + document.Environment + " / " + item.Topic, Service: document.Service, Environment: document.Environment, Keywords: searchKeywords(item.Topic), Knowledge: []string{item.Knowledge}, RunIDs: item.SourceRunIDs})
+			}
+		}
+	}
+	sort.Slice(indexTopics, func(i, j int) bool { return indexTopics[i].Subject < indexTopics[j].Subject })
+	index := indexDocument{Generation: memoryGeneration, Kind: "memory_index", Topics: indexTopics}
 	summary := summaryDocument{Generation: memoryGeneration, Kind: "memory_summary", Topics: append([]topic(nil), index.Topics...)}
 	if err := s.writeRaw(raw, force); err != nil {
 		return err

@@ -13,7 +13,7 @@ import (
 func TestRedisPingReturnsPongObservation(t *testing.T) {
 	addr := startFakeRedis(t, "+PONG\r\n")
 
-	tool := New()
+	tool := NewPing()
 	observation, err := tool.Run(context.Background(), mustArgs(t, Args{Addr: addr}))
 	if err != nil {
 		t.Fatalf("run redis ping: %v", err)
@@ -34,7 +34,7 @@ func TestRedisPingReturnsPongObservation(t *testing.T) {
 }
 
 func TestRedisPingRejectsMissingAddr(t *testing.T) {
-	tool := New()
+	tool := NewPing()
 
 	_, err := tool.Run(context.Background(), mustArgs(t, Args{}))
 	if err == nil {
@@ -43,7 +43,7 @@ func TestRedisPingRejectsMissingAddr(t *testing.T) {
 }
 
 func TestRedisPingSchemaDescribesOptionalPassword(t *testing.T) {
-	schema := New().Spec().Schema
+	schema := NewPing().Spec().Schema
 
 	if schema.Properties["password"].Type != "string" {
 		t.Fatalf("password schema = %#v, want string", schema.Properties["password"])
