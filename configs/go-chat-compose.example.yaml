@@ -65,6 +65,11 @@ paths:
   report_dir: reports
 
 targets:
+  # Optional real test-account login; credentials stay inside the tool.
+  # test_account:
+  #   url: http://localhost:8080/v1/user/login  # Must also be in allowed_post_urls.
+  #   credentials_file: configs/login-account.secret  # JSON: email, password; chmod 600.
+  # Alternatively use email_env and password_env (process environment, not .env).
   service: go-chat
   environment: local
   backend_base_url: http://localhost:8080

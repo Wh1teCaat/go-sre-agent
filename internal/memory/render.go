@@ -174,6 +174,9 @@ func splitDocument(data []byte) ([]byte, string, error) {
 // renderRolloutBody 构造单次复盘的人类可读正文。
 func renderRolloutBody(document rolloutDocument) string {
 	var content strings.Builder
+	if document.ModelSummary != "" {
+		content.WriteString("## 模型复盘（历史资料，需当前证据验证）\n\n" + memoryText(document.ModelSummary) + "\n\n")
+	}
 	fmt.Fprintf(&content, "# %s\n\n", markdownText(document.Title))
 	fmt.Fprintf(&content, "- run_id: `%s`\n- session_id: `%s`\n- service: `%s`\n- environment: `%s`\n- outcome: `%s`\n- conclusion_status: `%s`\n", document.RunID, fallbackID(document.SessionID), document.Service, document.Environment, document.Outcome, document.ConclusionStatus)
 	if document.CollectionStatus != CollectionActive {
@@ -208,14 +211,34 @@ func renderRolloutBody(document rolloutDocument) string {
 func renderRawBody(document rawDocument) string {
 	var content strings.Builder
 	content.WriteString("# 待整理经验汇总\n\n")
-	content.WriteString("本文件由已验证的复盘与有效模型提取文件确定性生成，不是原始工具日志，也不会整体注入模型。\n")
+	content.WriteString("本文件保存逐 Run 原始经验，作为同服务、同环境模型整合的材料；日常诊断按导航读取 MEMORY.md。未启用模型或处理失败时保留规则摘要。\n")
 	for _, entry := range document.Entries {
 		fmt.Fprintf(&content, "\n## %s\n\n", entry.RunID)
 		fmt.Fprintf(&content, "- 服务与环境：%s / %s\n- 故障关键词：%s\n- 结论强度：`%s`\n- 收录状态：`%s`\n- 适用条件：%s\n- 来源复盘：`rollout_summaries/%s.md`\n", markdownText(entry.Service), markdownText(entry.Environment), markdownText(strings.Join(entry.Keywords, "、")), entry.ConclusionStatus, entry.CollectionStatus, markdownText(entry.Applicability), entry.RunID)
-		content.WriteString("- 候选经验：\n")
-		writeBulletSection(&content, entry.Experience, "未提取。")
-		content.WriteString("- 失败教训：\n")
-		writeBulletSection(&content, entry.FailureLessons, "未记录。")
+		if entry.RolloutSummary != "" {
+			content.WriteString("\n### 模型复盘\n\n" + memoryText(entry.RolloutSummary) + "\n\n")
+		}
+		if entry.SkippedReason != "" {
+			content.WriteString("未提取可复用经验：" + memoryText(entry.SkippedReason) + "\n")
+		}
+		for _, candidate := range entry.Candidates {
+			content.WriteString("\n### 原始经验\n\n" + memoryText(candidate.Text) + "\n\n适用条件：" + memoryText(candidate.Applicability) + "\n")
+			content.WriteString("检索词：" + strings.Join(candidate.Keywords, "、") + "\n")
+			for _, pending := range candidate.PendingVerifications {
+				content.WriteString("- 待验证：" + memoryText(pending) + "\n")
+			}
+			for _, source := range candidate.Sources {
+				fmt.Fprintf(&content, "- 来源：%s / step %d / tool %s / call_id %s\n", source.RunID, source.Step, source.Tool, source.CallID)
+			}
+		}
+		if len(entry.Experience) > 0 {
+			content.WriteString("- 规则候选经验（模型处理前的回退）：\n")
+			writeBulletSection(&content, entry.Experience, "未提取。")
+		}
+		if len(entry.FailureLessons) > 0 {
+			content.WriteString("- 失败教训：\n")
+			writeBulletSection(&content, entry.FailureLessons, "未记录。")
+		}
 	}
 	if len(document.Entries) == 0 {
 		content.WriteString("\n- 当前没有已收录的复盘。\n")
@@ -231,7 +254,15 @@ func renderIndexBody(document indexDocument) string {
 	for _, item := range document.Topics {
 		fmt.Fprintf(&content, "\n## 主题：%s\n\n", markdownText(item.Subject))
 		fmt.Fprintf(&content, "- 适用范围：%s，%s。\n- 检索关键词：%s。\n- 可复用知识：\n", markdownText(item.Service), markdownText(item.Environment), markdownText(strings.Join(item.Keywords, "、")))
-		writeBulletSection(&content, item.Knowledge, "未提取到额外候选经验。")
+		for _, knowledge := range item.Knowledge {
+			content.WriteString("\n" + memoryText(knowledge) + "\n")
+		}
+		if item.Applicability != "" {
+			content.WriteString("\n适用条件：" + memoryText(item.Applicability) + "\n")
+		}
+		for _, conflict := range item.Conflicts {
+			content.WriteString("\n冲突或未解决项：" + memoryText(conflict) + "\n")
+		}
 		content.WriteString("- 来源：\n")
 		for _, runID := range item.RunIDs {
 			fmt.Fprintf(&content, "  - rollout_summaries/%s.md\n", runID)
@@ -251,6 +282,9 @@ func renderSummaryBody(document summaryDocument) string {
 	content.WriteString("按服务、环境和关键词先定位主题，再读取 MEMORY.md 与对应复盘；有效模型内容仍须回查来源 Run。\n")
 	for _, item := range document.Topics {
 		fmt.Fprintf(&content, "- `%s`：适用于 %s / %s；关键词：%s。\n", markdownText(item.Subject), markdownText(item.Service), markdownText(item.Environment), markdownText(strings.Join(item.Keywords, "、")))
+		if item.Summary != "" {
+			content.WriteString("  " + memoryText(item.Summary) + "\n")
+		}
 	}
 	if len(document.Topics) == 0 {
 		content.WriteString("- 当前没有知识主题。\n")

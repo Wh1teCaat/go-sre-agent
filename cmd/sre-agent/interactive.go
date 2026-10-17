@@ -38,7 +38,7 @@ type interactiveOptions struct {
 
 type interactiveDependencies struct {
 	startDiagnosis  func(context.Context, diagnoseOptions, string) (diagnoseResult, error)
-	saveDiagnosis   func(diagnoseResult, error) error
+	saveDiagnosis   func(diagnoseResult, error) (bool, error)
 	resumeDiagnosis func(context.Context, resumeOptions, string) (diagnoseResult, error)
 	modelEvaluation func(context.Context, modelEvaluationOptions) (storedEvaluation, error)
 }

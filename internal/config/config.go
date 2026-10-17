@@ -54,7 +54,16 @@ type PathsConfig struct {
 	ReportDir  string
 }
 
+type TestAccountConfig struct {
+	CredentialsFile string `yaml:"credentials_file"`
+	URL             string `yaml:"url"`
+	EmailEnv        string `yaml:"email_env"`
+	PasswordEnv     string `yaml:"password_env"`
+}
+
 type TargetConfig struct {
+	TestAccount TestAccountConfig
+
 	// Service 是跨会话知识检索的服务范围标签，不得填写地址、凭据等敏感信息。
 	Service        string
 	BackendBaseURL string
@@ -73,7 +82,7 @@ type TargetConfig struct {
 	WebSocketURL       string
 	LogFile            string
 	// SmokeCommand 非空时启用 smoke_run 合成事务工具。
-	// 这是唯一的非只读探测（测试账号真实写入），必须由运营者显式配置。
+	// 这是会产生测试数据写入的探测，必须由运营者显式配置。
 	SmokeCommand []string
 	SmokeDir     string
 	SmokeTimeout time.Duration
@@ -114,21 +123,22 @@ type rawConfig struct {
 		ReportDir  string `yaml:"report_dir"`
 	} `yaml:"paths"`
 	Targets struct {
-		Service            string   `yaml:"service"`
-		BackendBaseURL     string   `yaml:"backend_base_url"`
-		Environment        string   `yaml:"environment"`
-		AllowedPostURLs    []string `yaml:"allowed_post_urls"`
-		PostgresDSN        string   `yaml:"postgres_dsn"`
-		RedisAddr          string   `yaml:"redis_addr"`
-		KafkaAddr          string   `yaml:"kafka_addr"`
-		KafkaTopic         string   `yaml:"kafka_topic"`
-		KafkaContainer     string   `yaml:"kafka_container"`
-		KafkaConsumerGroup string   `yaml:"kafka_consumer_group"`
-		WebSocketURL       string   `yaml:"websocket_url"`
-		LogFile            string   `yaml:"log_file"`
-		SmokeCommand       []string `yaml:"smoke_command"`
-		SmokeDir           string   `yaml:"smoke_dir"`
-		SmokeTimeout       string   `yaml:"smoke_timeout"`
+		TestAccount        TestAccountConfig `yaml:"test_account"`
+		Service            string            `yaml:"service"`
+		BackendBaseURL     string            `yaml:"backend_base_url"`
+		Environment        string            `yaml:"environment"`
+		AllowedPostURLs    []string          `yaml:"allowed_post_urls"`
+		PostgresDSN        string            `yaml:"postgres_dsn"`
+		RedisAddr          string            `yaml:"redis_addr"`
+		KafkaAddr          string            `yaml:"kafka_addr"`
+		KafkaTopic         string            `yaml:"kafka_topic"`
+		KafkaContainer     string            `yaml:"kafka_container"`
+		KafkaConsumerGroup string            `yaml:"kafka_consumer_group"`
+		WebSocketURL       string            `yaml:"websocket_url"`
+		LogFile            string            `yaml:"log_file"`
+		SmokeCommand       []string          `yaml:"smoke_command"`
+		SmokeDir           string            `yaml:"smoke_dir"`
+		SmokeTimeout       string            `yaml:"smoke_timeout"`
 	} `yaml:"targets"`
 }
 
@@ -233,6 +243,15 @@ func Load(path string) (Config, error) {
 	}
 
 	cfg := Default()
+	cfg.Targets.TestAccount = raw.Targets.TestAccount
+	login := cfg.Targets.TestAccount
+	if login != (TestAccountConfig{}) {
+		envPair := login.EmailEnv != "" && login.PasswordEnv != ""
+		if login.URL == "" || (login.CredentialsFile == "" && !envPair) || (login.CredentialsFile != "" && (login.EmailEnv != "" || login.PasswordEnv != "")) {
+			return Config{}, fmt.Errorf("targets.test_account requires url and either credentials_file or both email_env and password_env")
+		}
+	}
+
 	cfg.Memory.ModelEnabled = raw.Memory.ModelEnabled
 	cfg.Memory.ExtractModel = raw.Memory.ExtractModel
 	cfg.Memory.ConsolidationModel = raw.Memory.ConsolidationModel

@@ -93,6 +93,25 @@ func inferTargetHealth(toolName string, observation schema.Observation) string {
 	data := observation.Data
 	switch toolName {
 	case "http_check":
+		if used, _ := boolDataValue(data, "test_account_used"); used {
+			status, ok := integerDataValue(data, "status")
+			if !ok {
+				return schema.TargetHealthUnknown
+			}
+			if status >= 400 {
+				return schema.TargetHealthUnhealthy
+			}
+			if status < 200 || status >= 300 {
+				return schema.TargetHealthUnknown
+			}
+			if code, exists := integerDataValue(data, "business_code"); exists && code != 0 {
+				return schema.TargetHealthUnhealthy
+			}
+			if issued, _ := boolDataValue(data, "session_issued"); issued {
+				return schema.TargetHealthHealthy
+			}
+			return schema.TargetHealthUnknown
+		}
 		if status, ok := integerDataValue(data, "status"); ok {
 			switch {
 			case status >= 500:

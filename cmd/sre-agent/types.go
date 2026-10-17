@@ -1,6 +1,7 @@
 package main
 
 import (
+	appconfig "github.com/y2/go-sre-agent/internal/config"
 	"time"
 
 	"github.com/y2/go-sre-agent/internal/agent"
@@ -8,6 +9,7 @@ import (
 )
 
 type diagnoseOptions struct {
+	TestAccount            appconfig.TestAccountConfig
 	Goal                   string
 	ConfigPath             string
 	Service                string

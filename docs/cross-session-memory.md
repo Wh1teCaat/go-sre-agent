@@ -1,4 +1,4 @@
-# 阶段 5：跨会话知识记忆
+# 跨会话知识记忆
 
 跨会话记忆只从已保存的 `.runs/<run_id>.json` 提取有限、脱敏且可追溯的复盘材料。
 它用于为新诊断提出假设，不能代替当前运行的工具证据、系统规则或工具策略；最终结论
@@ -10,9 +10,9 @@
 
 ```text
 memories/
-  memory_summary.md                 # 轻量主题导航
-  MEMORY.md                         # 按服务、环境和关键词的主题索引
-  raw_memories.md                   # 按 run 汇集的候选经验，含失效/删除审计项
+  memory_summary.md                 # 模型检索入口：主题、何时查阅、检索词
+  MEMORY.md                         # 模型按主题整理的详细经验库
+  raw_memories.md                   # 逐 Run 原始经验，作为模型整合材料，含审计项
   rollout_summaries/
     <run_id>.md                     # 一次已收录诊断的复盘和证据定位
   extractions/
@@ -27,10 +27,22 @@ memories/
 
 每份 `rollout_summaries/<run_id>.md` 包含 run/session、服务、环境、结果、故障现象与
 目标、关键检查、结论强度、未解决项、有效/失败经验，以及 `run / step / tool / call_id`
-来源引用。`rollout_summaries/` 始终由程序确定性生成。有效的模型提取候选会进入
-`raw_memories.md`；同范围整合主题会进入 `MEMORY.md` 和 `memory_summary.md`。
-Markdown 索引由程序重建，模型只写带校验的 JSON 产物。检索仍按服务、环境和关键词进行，
-不是向量检索；`memory_summary.md` 不复制完整复盘。
+来源引用。保存时先生成规则复盘作为回退；模型提取完成后，详细模型复盘会写入同一
+`rollout_summaries/<run_id>.md`，其原始经验、待验证项与引用写入 `extractions/`，并完整
+投影到 `raw_memories.md`。模型按同服务、同环境的原始经验材料整合，生成详细知识、
+适用条件、冲突、自由检索词和独立导航摘要。它们分别进入 `MEMORY.md` 和 `memory_summary.md`。
+
+三个文件分别服务于不同阶段：
+
+| 文件 | 职责 | 消费者 |
+| --- | --- | --- |
+| `raw_memories.md` | 逐 Run 原始经验，包括细节、反证、未解决项与来源 | 整合模型；人工审计 |
+| `MEMORY.md` | 跨 Run 整理后的经验正文、适用条件、冲突与来源 | 检索模型选择主题后按需读取 |
+| `memory_summary.md` | 简短主题提示、何时查阅、检索词和来源 ID，不复制经验正文 | 检索模型的第一阶段 |
+
+整合请求使用与 `raw_memories.md` 相同的原始经验投影，由有效提取结果构造，仅包含当前
+服务和环境；不会把全库原始经验塞入新诊断。JSON 仍是带来源摘要的校验存储格式，
+Markdown 由程序渲染；内容选择、主题归纳和相关性判断交给模型。无需向量数据库。
 
 ## 写入、收录与重建
 
@@ -41,13 +53,17 @@ Markdown 索引由程序重建，模型只写带校验的 JSON 产物。检索�
   → .sessions/<session_id>/memory.md
   → rollout_summaries/<run_id>.md
   → raw_memories.md → MEMORY.md → memory_summary.md
-  → [启用模型记忆时] extractions/<run_id>.json
-  → consolidations/<scope_hash>.json → 重建三个 Markdown 索引
+  → [启用模型记忆时] 分块提取完整观察和诊断
+  → 更新 rollout_summaries/<run_id>.md + extractions/<run_id>.json
+  → raw_memories.md（逐 Run 原始经验）
+  → 同范围模型整合 → consolidations/<scope_hash>.json
+  → MEMORY.md（详细经验）+ memory_summary.md（轻量导航）
 ```
 
 只有 `completed`、`failed`、`cancelled` 或 `timed_out`，且 trace 至少包含一次实际工具
 检查的 run 才会收录。空 skeleton、仍在运行的 run、以及没有工具观察的模型失败不会
-进入知识库。所有摘要文本先经脱敏和长度限制，再写入权限为 `0600` 的文件；根目录和
+进入知识库。这只是来源资格判断；模型可以进一步判定该 Run 没有可复用经验，保存跳过原因，
+不进入主题索引且不反复提取。所有模型文本先脱敏、校验容量，再写入权限为 `0600` 的文件；根目录和
 复盘目录权限为 `0700`。文件以同目录临时文件写入、同步并原子替换。
 
 索引更新由 `memories/.memory.lock` 短时互斥，避免多个 session 同时覆盖；异常退出遗留且
@@ -71,7 +87,7 @@ sre memory rebuild
 memory:
   model_enabled: true
   extract_model: ""        # 留空时使用当前 provider 的默认模型
-  consolidation_model: ""  # 可与 extract_model 相同
+  consolidation_model: ""  # 也用于诊断前的导航/经验选择，可与 extract_model 相同
   timeout: 30s
   round_limit: 2
 ```
@@ -85,24 +101,51 @@ sre memory rebuild --config configs/config.yaml --run-dir .runs
 ```
 
 每个 JSON 文件含版本、内容摘要和来源摘要，使用 `0600` 权限原子写入。
-提取只发送脱敏、限长的目标、诊断和工具观察摘要，且引用必须匹配保存的
-`run_id / step / tool / call_id`。整合只接收同一服务、环境内有效提取，保留冲突、
-适用条件和来源 run；输入摘要变化会立即使整合结果失效。写文件前再次检查来源，
-模型调用期间不持有索引锁；短期租约减少多进程重复调用。所有模型文字仍是历史候选经验，
-不能代替本次诊断的工具证据，也不能把 `suspected` 升级为 `identified`。
+
+提取输入包含目标、完整结构化诊断（含反证与待验证项）、计划，以及每条工具观察的
+事实、数据、目标身份、状态、时间、参数和错误；递归脱敏后按大小分块，不再只取前
+16 条观察或每条 300 字节摘要。模型可以保留多段 Markdown、具体命令、错误特征和
+适用条件，也可以返回空经验及跳过原因。任一分块失败时不提交部分提取；一次 Run 的
+全部分块共享 `memory.timeout`。超大单条观察（128 KiB）、请求（256 KiB）或输出超限
+会使该项处理失败，保留来源与回退材料，不静默截掉尾部当作完整经验。
+
+每条候选最多 8 KiB，单 Run 最多 128 条，模型复盘合计最多 128 KiB；同范围整合最多
+128 个有效提取、64 个主题，每个主题正文最多 16 KiB。容量是处理边界，不强迫模型凑
+条数，也不限制检索词必须来自固定词表。过大的整合输入不会被静默截成部分 Run。
+
+引用必须匹配保存的 `run_id / step / tool / call_id`，且分块提取只能引用该分块实际提供
+的观察。整合保留适用条件、冲突和来源 Run；输入摘要变化会使整合结果失效。写入前
+再次检查来源，模型调用期间不持有索引锁；短期租约减少多进程重复调用。结论强度由
+来源和人工修正状态决定；提示词要求自由文本不得升级结论，但引用校验并不等于语义
+正确性证明。历史内容仍需本次证据验证。
+
+旧版 `model-memory-v1` JSON 保留校验读取能力，但不再视为有效模型经验。
+`memory process` 或后台 worker 会从保存的 Run 重新提取为 v2；`memory rebuild` 不调用
+模型，因此只提供规则回退。有效新产物的重复收录和离线重建保持幂等。
 
 ## 读取范围与证据边界
 
-普通 `diagnose` 和 `resume` 在加载当前会话记忆后，按下列固定路径按需读取历史资料：
+普通 `diagnose` 和 `resume` 在加载当前会话记忆后，启用模型记忆时按以下路径读取：
 
 ```text
-memory_summary.md → MEMORY.md → 匹配 rollout_summaries
-                                 ↘ 有效 extractions / consolidations → 必要时回查 .runs
+按服务、环境过滤有效 memory_summary.md 导航
+    ↓ 模型根据当前问题的含义选主题（可返回无匹配）
+读取 MEMORY.md 中被选中的经验正文
+    ↓ 模型选来源 Run，并判断是否需要更详细的复盘
+只在需要时展开对应模型复盘和来源引用
+    ↓ 校验来源未变化，组成历史提示
+本次诊断模型
 ```
 
-runtime 按 `targets.service`、`targets.environment` 和当前排障目标过滤，默认最多取
-3 份复盘、总计 12 KiB。服务和环境均为精确范围匹配；关键词只在同一范围内排序。每条
-注入模型的历史资料带有来源 run 和结论强度，并明确标记为不可信的历史资料。
+这是诊断开始前最多两次检索模型请求，不是给诊断模型开放任意文件访问。
+两次请求共享 `memory.timeout`，也受整次任务超时约束。第一阶段只暴露轻量导航，
+第二阶段只暴露选中的主题；最多选 8 个主题，最后默认最多返回 3 个来源 Run、总计
+12 KiB。服务和环境在模型选择之前隔离，选择结果只能引用所提供的主题和 Run。
+模型返回无匹配时不硬塞历史；调用失败或非法选择时回退本地检索。
+
+模型关闭或使用 mock 时，仍可离线按范围和关键词检索规则复盘及有效经验；自由模型
+关键词也参与排序。`sre memory search` 和 TUI `/memory` 查询保持离线，用于检查索引，
+不等同于诊断时的语义选择。每条注入资料带来源 Run、结论强度和历史假设声明。
 
 历史的 `identified`、`suspected`、`undetermined` 不会在整理或读取时升级。它们只能
 帮助选择待验证检查；本次 final 仍须通过现有结构化证据规则校验。生成文件中的文字也

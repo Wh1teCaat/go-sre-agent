@@ -53,9 +53,18 @@ func initializeDiagnosis(opts diagnoseOptions, mockScenario string) (diagnosisSe
 // 参数: cfg 为已解析诊断配置；返回: 工具注册表或注册错误。
 func buildToolRegistry(cfg diagnoseOptions) (*tools.Registry, error) {
 	registry := tools.NewRegistry()
+	httpTool := httpcheck.NewWithPolicy(2048, cfg.AllowedHosts, cfg.AllowedPostURLs, cfg.AllowedResponseHeaders)
+	if cfg.TestAccount.URL != "" {
+		if err := httpTool.ConfigureTestAccount(httpcheck.TestAccount{
+			URL: cfg.TestAccount.URL, EmailEnv: cfg.TestAccount.EmailEnv,
+			PasswordEnv: cfg.TestAccount.PasswordEnv, CredentialsFile: cfg.TestAccount.CredentialsFile,
+		}); err != nil {
+			return nil, err
+		}
+	}
 	dockerScope := docker.NewScope(cfg.DockerComposeProject, cfg.AllowedComposeServices)
 	all := []tools.Tool{
-		httpcheck.NewWithPolicy(2048, cfg.AllowedHosts, cfg.AllowedPostURLs, cfg.AllowedResponseHeaders),
+		httpTool,
 		logread.New(cfg.AllowedLogDirs, 1000),
 		postgres.NewPing(),
 		postgres.NewCheck(),
@@ -79,7 +88,7 @@ func buildToolRegistry(cfg diagnoseOptions) (*tools.Registry, error) {
 			dockerScope,
 		))
 	}
-	// smoke_run 是唯一的非只读探测（合成事务），仅在运营者显式配置命令时注册。
+	// smoke_run 合成事务仅在运营者显式配置命令时注册。
 	if len(cfg.SmokeCommand) > 0 {
 		all = append(all, smoke.New(cfg.SmokeCommand, cfg.SmokeDir, cfg.SmokeTimeout))
 	}
@@ -181,6 +190,8 @@ func resolveDiagnosisConfig(opts diagnoseOptions) (diagnoseOptions, error) {
 		}
 	}
 	resolved := diagnoseOptions{
+		ConfigPath:             opts.ConfigPath,
+		TestAccount:            cfg.Targets.TestAccount,
 		Goal:                   opts.Goal,
 		Service:                cfg.Targets.Service,
 		BackendBaseURL:         cfg.Targets.BackendBaseURL,
@@ -308,6 +319,7 @@ func loadAppConfig(configPath string) (appconfig.Config, error) {
 // 参数: cfg 为诊断配置；返回: 提供给 LLM 的目标与白名单信息。
 func targetContextForDiagnose(cfg diagnoseOptions) map[string]any {
 	context := map[string]any{
+		"test_account_configured":  cfg.TestAccount.URL != "" && toolAllowed(cfg.ToolAllowlist, "http_check"),
 		"backend_base_url":         cfg.BackendBaseURL,
 		"allowed_post_urls":        cfg.AllowedPostURLs,
 		"postgres_target":          safePostgresDSNForPrompt(cfg.PostgresDSN),
@@ -319,6 +331,9 @@ func targetContextForDiagnose(cfg diagnoseOptions) map[string]any {
 		"allowed_response_headers": cfg.AllowedResponseHeaders,
 		"docker_containers":        cfg.AllowedContainers,
 		"docker_compose_project":   cfg.DockerComposeProject,
+	}
+	if cfg.TestAccount.URL != "" && toolAllowed(cfg.ToolAllowlist, "http_check") {
+		context["test_account_login_url"] = cfg.TestAccount.URL
 	}
 	// 不将不可调用的 Kafka 目标交给模型，避免 Compose 内部 broker 被模型当成宿主机可达地址。
 	if toolAllowed(cfg.ToolAllowlist, kafka.CheckName) && strings.TrimSpace(cfg.KafkaAddr) != "" {

@@ -96,18 +96,7 @@ func (s *Store) loadIndex() (indexDocument, error) {
 	if err != nil {
 		return indexDocument{}, err
 	}
-	front, body, err := splitDocument(data)
-	if err != nil {
-		return indexDocument{}, err
-	}
-	var document indexDocument
-	if err := yaml.Unmarshal(front, &document); err != nil {
-		return indexDocument{}, err
-	}
-	if err := verifyIndex(document, body); err != nil {
-		return indexDocument{}, err
-	}
-	return document, nil
+	return decodeGenerated(data, verifyIndex)
 }
 
 // loadSummary 读取并验证轻量导航文件。
@@ -117,18 +106,7 @@ func (s *Store) loadSummary() (summaryDocument, error) {
 	if err != nil {
 		return summaryDocument{}, err
 	}
-	front, body, err := splitDocument(data)
-	if err != nil {
-		return summaryDocument{}, err
-	}
-	var document summaryDocument
-	if err := yaml.Unmarshal(front, &document); err != nil {
-		return summaryDocument{}, err
-	}
-	if err := verifySummary(document, body); err != nil {
-		return summaryDocument{}, err
-	}
-	return document, nil
+	return decodeGenerated(data, verifySummary)
 }
 
 // writeRollout 原子写入复盘，并在非强制模式下拒绝覆盖人工编辑。
@@ -142,15 +120,8 @@ func (s *Store) writeRollout(document rolloutDocument, force bool) error {
 		return err
 	}
 	return writeGenerated(path, data, force, func(existing []byte) error {
-		front, body, err := splitDocument(existing)
-		if err != nil {
-			return err
-		}
-		var current rolloutDocument
-		if err := yaml.Unmarshal(front, &current); err != nil {
-			return err
-		}
-		return verifyRollout(current, body)
+		_, err := decodeGenerated(existing, verifyRollout)
+		return err
 	})
 }
 
@@ -161,15 +132,8 @@ func (s *Store) writeRaw(document rawDocument, force bool) error {
 		return err
 	}
 	return writeGenerated(filepath.Join(s.dir, rawFileName), data, force, func(existing []byte) error {
-		front, body, err := splitDocument(existing)
-		if err != nil {
-			return err
-		}
-		var current rawDocument
-		if err := yaml.Unmarshal(front, &current); err != nil {
-			return err
-		}
-		return verifyRaw(current, body)
+		_, err := decodeGenerated(existing, verifyRaw)
+		return err
 	})
 }
 
@@ -180,15 +144,8 @@ func (s *Store) writeIndex(document indexDocument, force bool) error {
 		return err
 	}
 	return writeGenerated(filepath.Join(s.dir, indexFileName), data, force, func(existing []byte) error {
-		front, body, err := splitDocument(existing)
-		if err != nil {
-			return err
-		}
-		var current indexDocument
-		if err := yaml.Unmarshal(front, &current); err != nil {
-			return err
-		}
-		return verifyIndex(current, body)
+		_, err := decodeGenerated(existing, verifyIndex)
+		return err
 	})
 }
 
@@ -199,16 +156,26 @@ func (s *Store) writeSummary(document summaryDocument, force bool) error {
 		return err
 	}
 	return writeGenerated(filepath.Join(s.dir, summaryFileName), data, force, func(existing []byte) error {
-		front, body, err := splitDocument(existing)
-		if err != nil {
-			return err
-		}
-		var current summaryDocument
-		if err := yaml.Unmarshal(front, &current); err != nil {
-			return err
-		}
-		return verifySummary(current, body)
+		_, err := decodeGenerated(existing, verifySummary)
+		return err
 	})
+}
+
+// decodeGenerated 统一生成文件的 front matter 解析和完整性校验。
+// 各文档仍使用自己的 metadata 和摘要校验规则。
+func decodeGenerated[T any](data []byte, verify func(T, string) error) (T, error) {
+	var document T
+	front, body, err := splitDocument(data)
+	if err != nil {
+		return document, err
+	}
+	if err := yaml.Unmarshal(front, &document); err != nil {
+		return document, err
+	}
+	if err := verify(document, body); err != nil {
+		return document, err
+	}
+	return document, nil
 }
 
 // writeGenerated 先验证旧文件仍由本版本未修改地生成，再使用临时文件原子替换。

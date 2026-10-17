@@ -158,8 +158,8 @@ func (s *Store) SaveMemory(sessionID, content string) error {
 	return nil
 }
 
-// MemoryDigest 返回 SaveMemory 实际写入的脱敏 Markdown 摘要；会话更新使用它拒绝
-// 静默覆盖被人工修改的生成记忆文件。
+// MemoryDigest 按 SaveMemory 相同的脱敏规则处理 Markdown 内容，返回其 SHA-256
+// 校验值的十六进制字符串。调用方将其与已保存的校验值比较，以检测记忆文件是否被修改。
 func MemoryDigest(content string) string {
 	sum := sha256.Sum256([]byte(redactedMemory(content)))
 	return hex.EncodeToString(sum[:])

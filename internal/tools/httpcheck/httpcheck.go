@@ -31,6 +31,7 @@ type Args struct {
 }
 
 type Tool struct {
+	testAccount            *TestAccount
 	maxBodyBytes           int
 	allowedHosts           tools.AllowedHosts
 	allowedPOST            map[string]struct{}
@@ -68,9 +69,14 @@ func NewWithPolicy(maxBodyBytes int, allowedHosts []string, allowedPOSTURLs []st
 }
 
 func (t *Tool) Spec() tools.ToolSpec {
+	description := "Request an HTTP endpoint and return status, latency, response request_id, a bounded body snippet, and operator-allowed response headers. Put a user-specified reproduction request_id in the X-Request-ID header; use the returned request_id for later log correlation. GET/HEAD are read-only; POST is limited to configured diagnostic URLs."
+	if t.testAccount != nil {
+		description += " A test account is configured: POST to test_account_login_url with no body or credentials; the tool injects the configured account. Returns business_code and session_issued instead of the login response body. Login may create a session; do not repeat or batch credentialed login requests."
+	}
 	return tools.ToolSpec{
 		Name:        Name,
-		Description: "Request an HTTP endpoint and return status, latency, response request_id, a bounded body snippet, and operator-allowed response headers. Put a user-specified reproduction request_id in the X-Request-ID header; use the returned request_id for later log correlation. GET/HEAD are read-only; POST is limited to configured diagnostic URLs.",
+		Description: description,
+		SideEffect:  t.testAccount != nil,
 		Schema: tools.ToolSchema{
 			Properties: map[string]tools.ArgSpec{
 				"url":     {Type: "string", Required: true, Description: "HTTP URL to request."},
@@ -114,6 +120,12 @@ func (t *Tool) Run(ctx context.Context, rawArgs json.RawMessage) (schema.Observa
 		return schema.Observation{}, err
 	}
 
+	credentialed := t.testAccount != nil && method == http.MethodPost && args.URL == t.testAccount.URL
+	if credentialed {
+		if err := t.injectTestAccount(&args); err != nil {
+			return schema.Observation{}, err
+		}
+	}
 	repeat := args.Repeat
 	if repeat <= 0 {
 		repeat = 1
@@ -123,6 +135,11 @@ func (t *Tool) Run(ctx context.Context, rawArgs json.RawMessage) (schema.Observa
 	}
 
 	client := t.requestClient()
+	if credentialed {
+		client.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+	}
+	loginFacts := map[string]any{}
+
 	statusCounts := map[string]int{}
 	var latencies []int64
 	transportErrors := 0
@@ -166,8 +183,17 @@ func (t *Tool) Run(ctx context.Context, rawArgs json.RawMessage) (schema.Observa
 		// body 只保留有限片段，并在进入 observation 前脱敏；
 		// 该 observation 后续会进入 LLM 上下文和 Markdown 报告。
 		bodySnippet = tools.RedactSensitive(string(body))
+		if credentialed {
+			bodySnippet = ""
+			loginFacts = testAccountResponseFacts(body)
+		}
 		requestID = strings.TrimSpace(response.Header.Get("X-Request-ID"))
 		lastResponseHeaders = t.collectResponseHeaders(response.Header)
+		if credentialed {
+			// Only retain our own correlation ID; response headers can contain issued credentials.
+			requestID = args.Headers["X-Request-ID"]
+			lastResponseHeaders = map[string]string{}
+		}
 		for header, value := range lastResponseHeaders {
 			if responseHeaderValues[header] == nil {
 				responseHeaderValues[header] = make(map[string]int)
@@ -198,6 +224,13 @@ func (t *Tool) Run(ctx context.Context, rawArgs json.RawMessage) (schema.Observa
 		"body_snippet":     bodySnippet,
 		"request_id":       requestID,
 		"response_headers": lastResponseHeaders,
+	}
+	if credentialed {
+		delete(data, "body_snippet")
+		data["test_account_used"] = true
+		for key, value := range loginFacts {
+			data[key] = value
+		}
 	}
 	if repeat > 1 {
 		summary = fmt.Sprintf("%s %s sampled %d times: %s; latency %d-%dms", method, args.URL, repeat, formatStatusCounts(statusCounts), minLatency, maxLatency)

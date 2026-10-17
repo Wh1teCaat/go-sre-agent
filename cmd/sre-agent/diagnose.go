@@ -7,7 +7,6 @@ import (
 	"time"
 
 	"github.com/y2/go-sre-agent/internal/agent"
-	memory "github.com/y2/go-sre-agent/internal/memory"
 	"github.com/y2/go-sre-agent/internal/policy"
 	"github.com/y2/go-sre-agent/internal/report"
 	runstore "github.com/y2/go-sre-agent/internal/run"
@@ -121,18 +120,14 @@ func executeDiagnosisRun(ctx context.Context, opts diagnoseOptions, runID string
 		return diagnoseResult{RunDir: setup.config.RunDir, SessionDir: setup.config.SessionDir, Service: setup.config.Service, MemoryDir: setup.config.MemoryDir, Environment: setup.config.Environment, OverwriteSessionMemory: setup.config.OverwriteSessionMemory, ReportDir: setup.config.ReportDir}, err
 	}
 	cfg := setup.config
+	taskCtx, cancel := context.WithTimeout(ctx, cfg.TaskTimeout)
+	defer cancel()
 	memories, err := sessionMemoryHintsForDiagnose(cfg.SessionDir, cfg.SessionID, cfg.Environment, cfg.NewSession, cfg.OverwriteSessionMemory)
 	if err != nil {
 		return diagnoseResult{RunDir: cfg.RunDir, SessionDir: cfg.SessionDir, Service: cfg.Service, MemoryDir: cfg.MemoryDir, Environment: cfg.Environment, OverwriteSessionMemory: cfg.OverwriteSessionMemory, ReportDir: cfg.ReportDir}, err
 	}
 	if cfg.MemoryDir != "" {
-		history, err := memory.NewStore(cfg.MemoryDir).WithRunDir(cfg.RunDir).Hints(memory.Query{
-			Service:     cfg.Service,
-			Environment: cfg.Environment,
-			Goal:        cfg.Goal,
-			MaxMatches:  3,
-			MaxBytes:    12 * 1024,
-		})
+		history, err := crossSessionHints(taskCtx, cfg, setup.model == "mock")
 		if err != nil {
 			return diagnoseResult{RunDir: cfg.RunDir, SessionDir: cfg.SessionDir, Service: cfg.Service, MemoryDir: cfg.MemoryDir, Environment: cfg.Environment, OverwriteSessionMemory: cfg.OverwriteSessionMemory, ReportDir: cfg.ReportDir}, fmt.Errorf("load cross-session memories: %w", err)
 		}
@@ -142,8 +137,6 @@ func executeDiagnosisRun(ctx context.Context, opts diagnoseOptions, runID string
 		cfg.Progress(agent.ProgressEvent{Kind: agent.ProgressMemoryLoaded, Memories: append([]schema.Memory(nil), memories...)})
 	}
 
-	taskCtx, cancel := context.WithTimeout(ctx, cfg.TaskTimeout)
-	defer cancel()
 	taskDeadline, _ := taskCtx.Deadline()
 	taskDeadline = taskDeadline.UTC()
 	state := runstore.State{

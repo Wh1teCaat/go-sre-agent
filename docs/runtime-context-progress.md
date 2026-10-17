@@ -54,8 +54,9 @@ runtime 从最新观测开始选择内容，以优先保留当前排障最相关
 
 在执行前，runtime 会为批次内每项先创建独立的 `call_id` 并写入 `running`
 checkpoint，然后按 `max_parallel_tools` 调度。worker 只执行工具并返回结果；trace、
-调用终态和 checkpoint 由主循环按 action 顺序写入。因此并行 worker 不会竞争 run
-持久化状态。批次每一项都消耗 `max_tool_calls` 预算。
+调用终态和 checkpoint 由主循环按完成通知顺序逐条写入，每条落盘后立即发布完成事件，
+无需等待整批完成。因此并行 worker 不会竞争 run 持久化状态。checkpoint 失败时取消
+剩余工作并收齐 worker 返回，不再提交后续结果。批次每一项都消耗 `max_tool_calls` 预算。
 
 如果取消、超时或 checkpoint 中断发生在批次内，已完成的结果按正常规则持久化；未能
 可靠写回的 `running` 调用在恢复前会转为 `unknown`。带副作用的未知调用仍遵循阶段 2

@@ -38,7 +38,7 @@ func (r *Runtime) executeTool(ctx context.Context, step int, action schema.Actio
 }
 
 // executeToolCalls 为每项调用先持久化 running checkpoint，再按并发上限执行。worker
-// 不修改 trace 或 calls，结果在主循环按 action 顺序写回，保证恢复快照的一致性。
+// 不修改 trace 或 calls，结果在主循环按完成通知顺序即时写回，保证恢复快照的一致性。
 func (r *Runtime) executeToolCalls(ctx context.Context, step int, calls []schema.ToolCall, meta llmMeta) error {
 	prepared := make([]preparedToolCall, 0, len(calls))
 	for _, call := range calls {
@@ -71,10 +71,11 @@ func (r *Runtime) executeToolCalls(ctx context.Context, step int, calls []schema
 		})
 	}
 
-	results := make([]toolExecutionResult, len(prepared))
+	batchCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
 	parallelism := min(r.config.MaxParallelTools, len(prepared))
 	semaphore := make(chan struct{}, parallelism)
-	completed := make(chan int, len(prepared))
+	completed := make(chan toolExecutionResult, len(prepared))
 	for index := range prepared {
 		current := prepared[index]
 		callID := r.calls[current.callIndex].CallID
@@ -87,23 +88,36 @@ func (r *Runtime) executeToolCalls(ctx context.Context, step int, calls []schema
 			CallID:     callID,
 			Message:    current.call.ThoughtSummary,
 		})
-		go func(index int, current preparedToolCall) {
-			semaphore <- struct{}{}
-			results[index] = runPreparedTool(ctx, r.config.ToolTimeout, current)
-			<-semaphore
-			completed <- index
-		}(index, current)
+		go func(current preparedToolCall) {
+			select {
+			case semaphore <- struct{}{}:
+				if err := batchCtx.Err(); err != nil {
+					<-semaphore
+					completed <- toolExecutionResult{prepared: current, err: err, startedAt: time.Now()}
+					return
+				}
+				result := runPreparedTool(batchCtx, r.config.ToolTimeout, current)
+				completed <- result
+				<-semaphore
+			case <-batchCtx.Done():
+				completed <- toolExecutionResult{prepared: current, err: batchCtx.Err(), startedAt: time.Now()}
+			}
+		}(current)
 	}
+	var recordErr error
 	for range prepared {
-		<-completed
-	}
-
-	for _, result := range results {
+		result := <-completed
+		if recordErr != nil {
+			continue
+		}
 		if err := r.recordToolExecution(ctx, step, result, meta); err != nil {
-			return err
+			recordErr = err
+			cancel()
+			// Drain workers before returning, but stop committing after a failed
+			// checkpoint. Uncommitted calls retain their recoverable running state.
 		}
 	}
-	return nil
+	return recordErr
 }
 
 // runPreparedTool 在 worker 中执行已 checkpoint 的工具。它不写共享状态，使并发

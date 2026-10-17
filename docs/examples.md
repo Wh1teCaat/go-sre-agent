@@ -96,3 +96,32 @@ sre diagnose \
 1. `websocket_check` 尝试 WebSocket HTTP Upgrade 握手。
 2. `log_read` 过滤最近的 WebSocket 相关错误。
 3. 报告会基于 WebSocket 握手和日志读取的 trace observation 展示 evidence。
+
+## 使用真实测试账号检查登录
+
+`http_check` 支持为固定登录地址自动注入测试账号：
+
+```yaml
+targets:
+  allowed_post_urls:
+    - http://localhost:8080/v1/user/login
+  test_account:
+    url: http://localhost:8080/v1/user/login
+    credentials_file: configs/login-account.secret
+```
+
+凭据文件是包含 `email`、`password` 的 JSON，建议权限 0600，使用被 Git
+忽略的 `.secret` 后缀。也可用 `email_env` 和 `password_env` 指定进程环境变量名，
+与文件方式互斥；不读取 LLM 的 `.env`。URL 必须同时满足主机和 POST 白名单。
+
+使用真实模型运行 `sre diagnose --goal "用测试账号验证登录，并关联日志排查异常"`，
+不要加 `--mock-scenario`。模型仍调用 `http_check`，参数只需登录 URL 和
+`method: POST`，不提供 body；工具内部读取账号并发送 JSON 邮箱和密码。
+注入仅匹配配置的精确 URL 和 POST，其他地址与 GET/HEAD 不携带测试凭据。
+
+响应保留 HTTP 状态、耗时、请求的 request ID、业务码与 `session_issued`
+（是否返回非空令牌），不返回登录正文、账号密码或令牌。模型可以关联 request ID
+查日志，再检查依赖；测试账号成功不能排除其他用户的问题。缺少凭据时明确报错，
+不会退化为空 POST。凭据请求拒绝自定义 body 和 repeat>1，不跟随重定向。
+启用测试账号后，`http_check` 保守按可能产生会话的工具处理，不能在并行批次中调用，
+也不会自动恢复结果未知的调用。

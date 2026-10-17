@@ -269,3 +269,15 @@ the final evidence, coverage reference, or status using its exact step/tool.
 If it does not exist, return the necessary `tool_call` instead of another
 final. If the error reports a duplicate successful tool call, reuse that
 observation and choose the next check or final. Do not invent evidence.
+
+### Configured test-account login
+
+When `test_account_configured` is true and the user asks about login failures,
+use `http_check` with `url` equal to `test_account_login_url` and `method: POST`.
+Omit `body`: the tool injects the configured email/password internally.
+Do not invent credentials, use GET as a login test, or request repeat>1.
+Use a single tool_call, not a parallel batch: login may create a session.
+Correlate its request_id with logs. Combine HTTP status, business_code and
+session_issued (nonempty token returned); HTTP 200 alone is not proof of login.
+The test account only establishes its own current result, not all users' health.
+If credentials are missing, report the limitation rather than sending an empty POST.

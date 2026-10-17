@@ -25,7 +25,7 @@ func (c *interactiveCLI) runDiagnosis(goal string) bool {
 		opts.NewSession = c.newSession
 		opts.Progress = c.progress.Report
 		result, taskErr = c.deps.startDiagnosis(ctx, opts, c.options.MockScenario)
-		taskErr = c.deps.saveDiagnosis(result, taskErr)
+		_, taskErr = c.deps.saveDiagnosis(result, taskErr)
 	})
 	c.recordInteractiveResult(result)
 	c.notifyMemoryForPersistedRun(result.State.RunID)
@@ -105,7 +105,7 @@ func (c *interactiveCLI) runResume(runID string, resumeRunning bool) bool {
 			Progress:               c.progress.Report,
 			ResumeRunning:          resumeRunning,
 		}, c.options.MockScenario)
-		taskErr = c.deps.saveDiagnosis(result, taskErr)
+		_, taskErr = c.deps.saveDiagnosis(result, taskErr)
 	})
 	c.recordInteractiveResult(result)
 	c.notifyMemoryForPersistedRun(result.State.RunID)

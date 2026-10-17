@@ -12,6 +12,7 @@ import (
 	"github.com/y2/go-sre-agent/internal/llm"
 	memory "github.com/y2/go-sre-agent/internal/memory"
 	runstore "github.com/y2/go-sre-agent/internal/run"
+	"github.com/y2/go-sre-agent/internal/schema"
 )
 
 // runMemoryCommand 管理固定 memories 根目录中的收录、检索与重建操作，并返回
@@ -185,24 +186,7 @@ func runMemorySearchCommand(args []string, stdout, stderr io.Writer) int {
 
 // runMemoryInvalidateCommand 显式排除已经失效的历史复盘。
 func runMemoryInvalidateCommand(args []string, stdout, stderr io.Writer) int {
-	fs := flag.NewFlagSet("memory invalidate", flag.ContinueOnError)
-	fs.SetOutput(io.Discard)
-	runID := fs.String("run-id", "", "run id")
-	reason := fs.String("reason", "", "why this knowledge is no longer applicable")
-	if err := fs.Parse(args); err != nil {
-		fmt.Fprintln(stderr, err)
-		return 2
-	}
-	if fs.NArg() != 0 || strings.TrimSpace(*runID) == "" || strings.TrimSpace(*reason) == "" {
-		fmt.Fprintln(stderr, "memory invalidate requires --run-id <run_id> --reason <reason>")
-		return 2
-	}
-	if err := memory.NewStore(memory.DefaultDir).Invalidate(*runID, *reason); err != nil {
-		fmt.Fprintln(stderr, err)
-		return 1
-	}
-	fmt.Fprintf(stdout, "memory invalidated: %s\n", *runID)
-	return 0
+	return runMemoryExclusionCommand(args, stdout, stderr, "invalidate", "invalidated", memory.NewStore(memory.DefaultDir).Invalidate)
 }
 
 // runMemoryCorrectCommand 显式降低或维持复盘的结论强度。
@@ -230,23 +214,28 @@ func runMemoryCorrectCommand(args []string, stdout, stderr io.Writer) int {
 
 // runMemoryDeleteCommand 从可检索知识集中逻辑删除一份复盘，并保留其来源 tombstone。
 func runMemoryDeleteCommand(args []string, stdout, stderr io.Writer) int {
-	fs := flag.NewFlagSet("memory delete", flag.ContinueOnError)
+	return runMemoryExclusionCommand(args, stdout, stderr, "delete", "deleted from retrieval", memory.NewStore(memory.DefaultDir).Delete)
+}
+
+// runMemoryExclusionCommand 共享排除经验的参数解析、执行和退出码处理。
+func runMemoryExclusionCommand(args []string, stdout, stderr io.Writer, command, result string, exclude func(string, string) error) int {
+	fs := flag.NewFlagSet("memory "+command, flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 	runID := fs.String("run-id", "", "run id")
-	reason := fs.String("reason", "", "why this knowledge should be removed")
+	reason := fs.String("reason", "", "why this knowledge should be excluded from retrieval")
 	if err := fs.Parse(args); err != nil {
 		fmt.Fprintln(stderr, err)
 		return 2
 	}
 	if fs.NArg() != 0 || strings.TrimSpace(*runID) == "" || strings.TrimSpace(*reason) == "" {
-		fmt.Fprintln(stderr, "memory delete requires --run-id <run_id> --reason <reason>")
+		fmt.Fprintf(stderr, "memory %s requires --run-id <run_id> --reason <reason>\n", command)
 		return 2
 	}
-	if err := memory.NewStore(memory.DefaultDir).Delete(*runID, *reason); err != nil {
+	if err := exclude(*runID, *reason); err != nil {
 		fmt.Fprintln(stderr, err)
 		return 1
 	}
-	fmt.Fprintf(stdout, "memory deleted from retrieval: %s\n", *runID)
+	fmt.Fprintf(stdout, "memory %s: %s\n", result, *runID)
 	return 0
 }
 
@@ -389,4 +378,31 @@ func processAfterDiagnosis(configPath, runDir, runID string, stderr io.Writer) {
 	if err != nil || stats.Failed > 0 {
 		fmt.Fprintf(stderr, "memory process deferred: %d failed; %v\n", stats.Failed, err)
 	}
+}
+
+// crossSessionHints uses model navigation when enabled; offline/mocked diagnosis
+// keeps deterministic retrieval and model failures do not prevent diagnosis.
+func crossSessionHints(ctx context.Context, cfg diagnoseOptions, mock bool) ([]schema.Memory, error) {
+	store := memory.NewStore(cfg.MemoryDir).WithRunDir(cfg.RunDir)
+	query := memory.Query{Service: cfg.Service, Environment: cfg.Environment, Goal: cfg.Goal, MaxMatches: 3, MaxBytes: 12 * 1024}
+	if mock {
+		return store.Hints(query)
+	}
+	app, err := loadAppConfig(cfg.ConfigPath)
+	if err != nil || !app.Memory.ModelEnabled {
+		return store.Hints(query)
+	}
+	provider, err := loadLLMConfig()
+	if err != nil {
+		return store.Hints(query)
+	}
+	client, err := newChatClient(provider)
+	if err != nil {
+		return store.Hints(query)
+	}
+	model := app.Memory.ConsolidationModel
+	if model == "" {
+		model = provider.Model
+	}
+	return store.HintsWithModel(ctx, query, memory.ReadOptions{Client: client, Model: model, Timeout: app.Memory.Timeout})
 }

@@ -234,3 +234,27 @@ func contains(values []string, want string) bool {
 	}
 	return false
 }
+
+func TestLoginCredentialConfiguration(t *testing.T) {
+	for _, tc := range []struct {
+		name, fields string
+		valid        bool
+	}{
+		{"file", "url: http://localhost/login\n    credentials_file: configs/account.secret", true},
+		{"env", "url: http://localhost/login\n    email_env: TEST_EMAIL\n    password_env: TEST_PASSWORD", true},
+		{"missing password", "url: http://localhost/login\n    email_env: TEST_EMAIL", false},
+		{"mixed", "url: http://localhost/login\n    credentials_file: configs/account.secret\n    email_env: TEST_EMAIL", false},
+		{"missing url", "credentials_file: configs/account.secret", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "config.yaml")
+			if err := os.WriteFile(path, []byte("targets:\n  test_account:\n    "+tc.fields+"\n"), 0600); err != nil {
+				t.Fatal(err)
+			}
+			_, err := Load(path)
+			if (err == nil) != tc.valid {
+				t.Fatalf("Load error = %v", err)
+			}
+		})
+	}
+}

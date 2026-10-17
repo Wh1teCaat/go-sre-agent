@@ -56,15 +56,7 @@ func (s *Store) RebuildForce() error {
 
 // Invalidate 将指定复盘标记为失效，并从后续索引和模型提示中排除；原始 run 不受影响。
 func (s *Store) Invalidate(runID, reason string) error {
-	if strings.TrimSpace(reason) == "" {
-		return fmt.Errorf("invalidation reason is required")
-	}
-	return s.editRollout(runID, func(document *rolloutDocument) error {
-		document.CollectionStatus = CollectionInvalidated
-		document.InvalidationReason = normalizedText(reason, 500)
-		document.UpdatedAt = time.Now().UTC()
-		return nil
-	})
+	return s.exclude(runID, reason, CollectionInvalidated)
 }
 
 // Correct 降低或维持一份复盘的结论强度，并记录修正说明。整理程序不允许把来源中
@@ -92,20 +84,27 @@ func (s *Store) Correct(runID, conclusionStatus, note string) error {
 // Delete 从跨会话知识集中逻辑删除指定复盘，并保留可审计的 tombstone。原始 run 和
 // rollout 文件不会物理删除，避免误删恢复和证据回查所需的事实来源。
 func (s *Store) Delete(runID, reason string) error {
+	return s.exclude(runID, reason, CollectionDeleted)
+}
+
+// exclude 统一失效和逻辑删除的执行路径，保留状态差异用于历史审计。
+func (s *Store) exclude(runID, reason string, status CollectionStatus) error {
 	if strings.TrimSpace(reason) == "" {
-		return fmt.Errorf("deletion reason is required")
+		if status == CollectionDeleted {
+			return fmt.Errorf("deletion reason is required")
+		}
+		return fmt.Errorf("invalidation reason is required")
 	}
 	return s.editRollout(runID, func(document *rolloutDocument) error {
-		document.CollectionStatus = CollectionDeleted
+		document.CollectionStatus = status
 		document.InvalidationReason = normalizedText(reason, 500)
 		document.UpdatedAt = time.Now().UTC()
 		return nil
 	})
 }
 
-// Search 按服务、环境和故障关键词读取轻量导航、主题索引和匹配复盘。返回内容已受
-// 数量和字节预算限制，适合继续转换为模型的历史假设提示。
-
+// collectRunLocked 从运行记录生成并保存复盘；非强制覆盖时保留已有的生命周期和纠正信息。
+// 调用方必须已持有写锁。
 func (s *Store) collectRunLocked(state runstore.State, force bool) error {
 	document, err := rolloutFromRun(state)
 	if err != nil {
@@ -124,33 +123,29 @@ func (s *Store) collectRunLocked(state runstore.State, force bool) error {
 
 // rebuildLocked 从全部已验证复盘构造可重建索引；调用方必须已持有写锁。
 func (s *Store) rebuildLocked(force bool) error {
+	// 以已校验的复盘为来源重建派生文件，不在此处调用模型或修改原始 run。
 	documents, err := s.loadAllRollouts()
 	if err != nil {
 		return err
 	}
+	// 汇总保留各收录状态，便于追溯；有效的模型提取结果补充到规则生成的候选经验中。
 	raw := rawDocument{Generation: memoryGeneration, Kind: "raw_memories"}
 	for _, document := range documents {
-		experience := append([]string(nil), document.CandidateExperience...)
 		if extraction, ok := s.validExtraction(document, s.runDir); ok {
-			for _, candidate := range extraction.Candidates {
-				experience = append(experience, "历史候选经验："+candidate.Text+"；适用条件："+candidate.Applicability)
-			}
+			raw.Entries = append(raw.Entries, rawEntryFromExtraction(document, extraction))
+		} else {
+			raw.Entries = append(raw.Entries, rawEntry{
+				RunID: document.RunID, Service: document.Service, Environment: document.Environment,
+				Outcome: document.Outcome, ConclusionStatus: document.ConclusionStatus, CollectionStatus: document.CollectionStatus,
+				Keywords: document.Keywords, Experience: document.CandidateExperience, FailureLessons: document.FailureLessons,
+				Applicability: applicabilityFor(document), Source: "rollout_summaries/" + document.RunID + ".md",
+			})
 		}
-		raw.Entries = append(raw.Entries, rawEntry{
-			RunID:            document.RunID,
-			Service:          document.Service,
-			Environment:      document.Environment,
-			Outcome:          document.Outcome,
-			ConclusionStatus: document.ConclusionStatus,
-			CollectionStatus: document.CollectionStatus,
-			Keywords:         append([]string(nil), document.Keywords...),
-			Experience:       uniqueLimited(experience, 12),
-			FailureLessons:   append([]string(nil), document.FailureLessons...),
-			Applicability:    applicabilityFor(document),
-			Source:           "rollout_summaries/" + document.RunID + ".md",
-		})
 	}
-	indexTopics := topicsFromRollouts(documents)
+	// 检索索引只纳入 active 复盘，先按服务、环境和主关键词构造基础主题。
+	indexTopics := []topic{}
+	covered := map[string]bool{}
+	// 同一服务和环境只追加一次有效的模型归纳主题，避免多个 run 重复引入相同结果。
 	scopes := map[string]bool{}
 	for _, document := range documents {
 		if document.CollectionStatus != CollectionActive {
@@ -162,14 +157,36 @@ func (s *Store) rebuildLocked(force bool) error {
 		}
 		scopes[key] = true
 		if consolidated, ok := s.validConsolidation(documents, s.runDir, document.Service, document.Environment); ok {
+			for _, input := range consolidated.Inputs {
+				covered[input.RunID] = true
+			}
 			for _, item := range consolidated.Items {
-				indexTopics = append(indexTopics, topic{Subject: document.Service + " / " + document.Environment + " / " + item.Topic, Service: document.Service, Environment: document.Environment, Keywords: searchKeywords(item.Topic), Knowledge: []string{item.Knowledge}, RunIDs: item.SourceRunIDs})
+				indexTopics = append(indexTopics, consolidatedTopic(document.Service, document.Environment, item))
 			}
 		}
 	}
+	fallback := []rolloutDocument{}
+	for _, document := range documents {
+		if covered[document.RunID] {
+			continue
+		}
+		if extraction, ok := s.validExtraction(document, s.runDir); ok && len(extraction.Candidates) == 0 {
+			continue
+		}
+		fallback = append(fallback, document)
+	}
+	indexTopics = append(indexTopics, topicsFromRollouts(fallback)...)
+	// 导航仅保存主题提示和来源，详细经验只存于 MEMORY.md。
 	sort.Slice(indexTopics, func(i, j int) bool { return indexTopics[i].Subject < indexTopics[j].Subject })
 	index := indexDocument{Generation: memoryGeneration, Kind: "memory_index", Topics: indexTopics}
-	summary := summaryDocument{Generation: memoryGeneration, Kind: "memory_summary", Topics: append([]topic(nil), index.Topics...)}
+	summary := summaryDocument{Generation: memoryGeneration, Kind: "memory_summary"}
+	for _, item := range index.Topics {
+		item.Knowledge = nil
+		item.Conflicts = nil
+		item.Applicability = ""
+		summary.Topics = append(summary.Topics, item)
+	}
+	// force 允许覆盖被修改的派生文件。三个文件分别原子替换，失败时不回滚已写入的文件。
 	if err := s.writeRaw(raw, force); err != nil {
 		return err
 	}
@@ -189,6 +206,7 @@ func (s *Store) editRollout(runID string, edit func(*rolloutDocument) error) err
 		if err != nil {
 			return err
 		}
+		document.ModelSummary = ""
 		if err := edit(&document); err != nil {
 			return err
 		}

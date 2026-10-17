@@ -28,7 +28,7 @@ func TestNewDiagnosisPersistsSessionStateAndMarkdownMemory(t *testing.T) {
 	if result.State.SessionID == "" {
 		t.Fatal("new diagnosis has no session id")
 	}
-	if err := saveDiagnosisResult(result, nil); err != nil {
+	if _, err := saveDiagnosisResult(result, nil); err != nil {
 		t.Fatalf("save diagnosis and session: %v", err)
 	}
 
@@ -78,7 +78,7 @@ func TestSessionMemoryLoadsOnlySelectedSessionAndContinuesIt(t *testing.T) {
 	if err != nil {
 		t.Fatalf("start first diagnosis: %v", err)
 	}
-	if err := saveDiagnosisResult(first, nil); err != nil {
+	if _, err := saveDiagnosisResult(first, nil); err != nil {
 		t.Fatalf("save first diagnosis: %v", err)
 	}
 
@@ -123,7 +123,7 @@ func TestSessionMemoryLoadsOnlySelectedSessionAndContinuesIt(t *testing.T) {
 	if second.State.SessionID != first.State.SessionID {
 		t.Fatalf("continued session id = %q, want %q", second.State.SessionID, first.State.SessionID)
 	}
-	if err := saveDiagnosisResult(second, nil); err != nil {
+	if _, err := saveDiagnosisResult(second, nil); err != nil {
 		t.Fatalf("save continued diagnosis: %v", err)
 	}
 
@@ -156,7 +156,7 @@ func TestSessionRejectsCrossEnvironmentContinuation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("start diagnosis: %v", err)
 	}
-	if err := saveDiagnosisResult(result, nil); err != nil {
+	if _, err := saveDiagnosisResult(result, nil); err != nil {
 		t.Fatalf("save diagnosis: %v", err)
 	}
 
@@ -186,7 +186,7 @@ func TestSessionRefusesToOverwriteManuallyChangedMemory(t *testing.T) {
 	if err != nil {
 		t.Fatalf("start first diagnosis: %v", err)
 	}
-	if err := saveDiagnosisResult(first, nil); err != nil {
+	if _, err := saveDiagnosisResult(first, nil); err != nil {
 		t.Fatalf("save first diagnosis: %v", err)
 	}
 	memoryPath := filepath.Join(sessionDir, first.State.SessionID, "memory.md")
@@ -226,7 +226,7 @@ func TestSessionRefusesToOverwriteManuallyChangedMemory(t *testing.T) {
 	if err != nil {
 		t.Fatalf("start explicit repair diagnosis: %v", err)
 	}
-	if err := saveDiagnosisResult(repair, nil); err != nil {
+	if _, err := saveDiagnosisResult(repair, nil); err != nil {
 		t.Fatalf("save explicit repair diagnosis: %v", err)
 	}
 	current, err = os.ReadFile(memoryPath)
@@ -249,7 +249,7 @@ func TestSessionPersistenceFailureKeepsRunAndReportsRunID(t *testing.T) {
 		CreatedAt: time.Unix(10, 0).UTC(),
 		UpdatedAt: time.Unix(20, 0).UTC(),
 	}
-	err := saveDiagnosisResult(diagnoseResult{
+	_, err := saveDiagnosisResult(diagnoseResult{
 		State:       state,
 		RunDir:      runDir,
 		SessionDir:  sessionDir,
@@ -289,7 +289,7 @@ func TestLegacyRunResumeRemainsSessionOptional(t *testing.T) {
 	if result.State.SessionID != "" {
 		t.Fatalf("legacy resume attached unexpected session %q", result.State.SessionID)
 	}
-	if err := saveDiagnosisResult(result, nil); err != nil {
+	if _, err := saveDiagnosisResult(result, nil); err != nil {
 		t.Fatalf("save legacy resume: %v", err)
 	}
 	entries, err := os.ReadDir(sessionDir)

@@ -101,7 +101,7 @@ targets:
 	if err != nil {
 		t.Fatalf("start diagnosis: %v", err)
 	}
-	if err := saveDiagnosisResult(result, nil); err != nil {
+	if _, err := saveDiagnosisResult(result, nil); err != nil {
 		t.Fatalf("save diagnosis: %v", err)
 	}
 	if result.State.RunID == "" {
@@ -146,7 +146,7 @@ paths:
 	if err != nil {
 		t.Fatalf("start diagnosis: %v", err)
 	}
-	if err := saveDiagnosisResult(result, nil); err != nil {
+	if _, err := saveDiagnosisResult(result, nil); err != nil {
 		t.Fatalf("save diagnosis: %v", err)
 	}
 
@@ -311,7 +311,7 @@ func TestResumeDiagnosisRunContinuesPersistedRunWithExistingTrace(t *testing.T) 
 	if !strings.Contains(result.Markdown, "resume completed") {
 		t.Fatalf("markdown missing final summary:\n%s", result.Markdown)
 	}
-	if err := saveDiagnosisResult(result, nil); err != nil {
+	if _, err := saveDiagnosisResult(result, nil); err != nil {
 		t.Fatalf("save resumed run: %v", err)
 	}
 
@@ -439,7 +439,7 @@ func TestCancelledDiagnosisPersistsTerminalCheckpoint(t *testing.T) {
 	if result.State.Status != runstore.StatusCancelled || result.State.ErrorClass != runstore.ErrorClassCancelled {
 		t.Fatalf("cancelled result = %#v", result.State)
 	}
-	if err := saveDiagnosisResult(result, err); err == nil {
+	if _, err := saveDiagnosisResult(result, err); err == nil {
 		t.Fatal("save diagnosis returned nil after cancellation")
 	}
 	loaded, loadErr := runstore.NewStore(runDir).Load(result.State.RunID)
@@ -481,7 +481,7 @@ func TestTaskTimeoutPersistsCallStatesAndTerminalStatus(t *testing.T) {
 	if result.State.Status != runstore.StatusTimedOut || result.State.ErrorClass != runstore.ErrorClassDeadlineExceeded || result.State.TaskDeadline == nil || result.State.TaskDeadline.IsZero() {
 		t.Fatalf("timed-out result = %#v", result.State)
 	}
-	if err := saveDiagnosisResult(result, err); err == nil {
+	if _, err := saveDiagnosisResult(result, err); err == nil {
 		t.Fatal("save diagnosis returned nil after timeout")
 	}
 	loaded, loadErr := runstore.NewStore(runDir).Load(result.State.RunID)
@@ -566,7 +566,7 @@ func TestResumeDiagnosisRunRejectsMismatchedRunID(t *testing.T) {
 }
 
 func TestSaveDiagnosisResultIncludesRunIDWhenStateWasCreated(t *testing.T) {
-	err := saveDiagnosisResult(diagnoseResult{
+	_, err := saveDiagnosisResult(diagnoseResult{
 		State:  runstore.State{RunID: "run_failed"},
 		RunDir: t.TempDir(),
 	}, fmt.Errorf("max steps reached"))

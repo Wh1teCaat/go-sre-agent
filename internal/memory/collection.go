@@ -71,6 +71,9 @@ func eligible(state runstore.State) bool {
 // mergeCollectionState 在 run 重试或恢复后刷新来源事实，同时保留显式生命周期和
 // 纠正元数据；自动整理绝不撤销人工失效或逻辑删除操作。
 func mergeCollectionState(existing, fresh rolloutDocument) rolloutDocument {
+	if existing.SourceDigest == fresh.SourceDigest {
+		fresh.ModelSummary = existing.ModelSummary
+	}
 	fresh.CollectionStatus = existing.CollectionStatus
 	fresh.ConclusionOverride = existing.ConclusionOverride
 	fresh.CorrectionNote = existing.CorrectionNote

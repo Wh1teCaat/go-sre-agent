@@ -34,7 +34,7 @@ func TestSaveDiagnosisResultUpdatesCrossSessionMemoryAfterRunAndSession(t *testi
 		CreatedAt: time.Unix(10, 0).UTC(),
 		UpdatedAt: time.Unix(20, 0).UTC(),
 	}
-	if err := saveDiagnosisResult(diagnoseResult{
+	if _, err := saveDiagnosisResult(diagnoseResult{
 		State:       state,
 		RunDir:      runDir,
 		MemoryDir:   memoryDir,

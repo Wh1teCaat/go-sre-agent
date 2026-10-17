@@ -57,6 +57,7 @@ type Match struct {
 }
 
 type rolloutDocument struct {
+	ModelSummary           string           `yaml:"model_summary,omitempty"`
 	Generation             string           `yaml:"generation"`
 	Kind                   string           `yaml:"kind"`
 	ContentDigest          string           `yaml:"content_digest"`
@@ -85,6 +86,9 @@ type rolloutDocument struct {
 }
 
 type rawEntry struct {
+	RolloutSummary   string           `yaml:"rollout_summary,omitempty"`
+	SkippedReason    string           `yaml:"skipped_reason,omitempty"`
+	Candidates       []Candidate      `yaml:"candidates,omitempty"`
 	RunID            string           `yaml:"run_id"`
 	Service          string           `yaml:"service"`
 	Environment      string           `yaml:"environment"`
@@ -106,12 +110,16 @@ type rawDocument struct {
 }
 
 type topic struct {
-	Subject     string   `yaml:"subject"`
-	Service     string   `yaml:"service"`
-	Environment string   `yaml:"environment"`
-	Keywords    []string `yaml:"keywords"`
-	Knowledge   []string `yaml:"knowledge,omitempty"`
-	RunIDs      []string `yaml:"run_ids"`
+	Summary       string   `yaml:"summary,omitempty"`
+	Applicability string   `yaml:"applicability,omitempty"`
+	Conflicts     []string `yaml:"conflicts,omitempty"`
+	ModelDerived  bool     `yaml:"model_derived,omitempty"`
+	Subject       string   `yaml:"subject"`
+	Service       string   `yaml:"service"`
+	Environment   string   `yaml:"environment"`
+	Keywords      []string `yaml:"keywords"`
+	Knowledge     []string `yaml:"knowledge,omitempty"`
+	RunIDs        []string `yaml:"run_ids"`
 }
 
 type indexDocument struct {

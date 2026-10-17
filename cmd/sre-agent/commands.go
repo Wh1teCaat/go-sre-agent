@@ -71,7 +71,7 @@ func runDiagnoseCommand(args []string, stdout, stderr io.Writer) int {
 		Environment:            *environment,
 		OverwriteSessionMemory: *overwriteSessionMemory,
 	}, *mockScenario)
-	if err := saveDiagnosisResult(result, err); err != nil {
+	if _, err := saveDiagnosisResult(result, err); err != nil {
 		fmt.Fprintln(stderr, err)
 		return 1
 	}
@@ -150,7 +150,7 @@ func runResumeCommand(args []string, stdout, stderr io.Writer) int {
 		Progress:               progress.Report,
 		ResumeRunning:          *resumeRunning,
 	}, *mockScenario)
-	if err := saveDiagnosisResult(result, err); err != nil {
+	if _, err := saveDiagnosisResult(result, err); err != nil {
 		fmt.Fprintln(stderr, err)
 		return 1
 	}

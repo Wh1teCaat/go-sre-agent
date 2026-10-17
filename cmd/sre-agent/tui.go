@@ -85,7 +85,7 @@ func (b *tuiBackend) Diagnose(ctx context.Context, goal string, emit func(agent.
 		emit(e)
 	}
 	result, runErr := c.deps.startDiagnosis(ctx, opts, c.options.MockScenario)
-	collected, err := saveDiagnosisResultWithCollection(result, runErr)
+	collected, err := saveDiagnosisResult(result, runErr)
 	c.recordInteractiveResult(result)
 	c.notifyMemoryForPersistedRun(result.State.RunID)
 	completion := tuiCompletion(result, c.currentSession, collected, err)
@@ -106,7 +106,7 @@ func (b *tuiBackend) Resume(ctx context.Context, runID string, resumeRunning boo
 		emit(e)
 	}
 	result, runErr := c.deps.resumeDiagnosis(ctx, resumeOptions{RunID: runID, RunDir: c.config.RunDir, SessionDir: c.config.SessionDir, MemoryDir: c.config.MemoryDir, Environment: c.config.Environment, OverwriteSessionMemory: c.config.OverwriteSessionMemory, ConfigPath: c.config.ConfigPath, Progress: progress, ResumeRunning: resumeRunning}, c.options.MockScenario)
-	collected, err := saveDiagnosisResultWithCollection(result, runErr)
+	collected, err := saveDiagnosisResult(result, runErr)
 	c.recordInteractiveResult(result)
 	c.notifyMemoryForPersistedRun(result.State.RunID)
 	completion := tuiCompletion(result, c.currentSession, collected, err)

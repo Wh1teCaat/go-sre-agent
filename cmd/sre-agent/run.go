@@ -14,13 +14,8 @@ import (
 )
 
 // saveDiagnosisResult 持久化运行状态，并保留诊断错误与保存错误。
-// 参数: result 为运行结果，runErr 为诊断错误；返回: 合并后的错误，全部成功时返回 nil。
-func saveDiagnosisResult(result diagnoseResult, runErr error) error {
-	_, err := saveDiagnosisResultWithCollection(result, runErr)
-	return err
-}
-
-func saveDiagnosisResultWithCollection(result diagnoseResult, runErr error) (bool, error) {
+// 参数: result 为运行结果，runErr 为诊断错误；返回: 是否收集了记忆及合并后的错误，全部成功时错误为 nil。
+func saveDiagnosisResult(result diagnoseResult, runErr error) (bool, error) {
 	var persistErr error
 	var collected bool
 	if result.State.RunID != "" {

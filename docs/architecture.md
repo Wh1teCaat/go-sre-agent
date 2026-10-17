@@ -1,6 +1,6 @@
 # 架构
 
-`go-sre-agent` 是一个以单列 TUI 为默认入口的 SRE 诊断 Agent，同时保留逐行交互和非交互子命令，不使用 Agent 框架。Runtime 先让 LLM provider 决定直接行动还是按需规划，校验 action，执行白名单内的诊断工具，记录 trace，然后持续循环，直到 provider 返回最终诊断。除显式配置的 `smoke_run` 外，工具均为只读；`smoke_run` 是受恢复限制的合成事务。
+`go-sre-agent` 是一个以单列 TUI 为默认入口的 SRE 诊断 Agent，同时保留逐行交互和非交互子命令，不使用 Agent 框架。Runtime 先让 LLM provider 决定直接行动还是按需规划，校验 action，执行白名单内的诊断工具，记录 trace，然后持续循环，直到 provider 返回最终诊断。`http_check` 可通过 `targets.test_account` 向固定登录地址注入测试凭据；启用后工具保守标记为有副作用，禁止并行批次及未知结果的自动恢复。`smoke_run` 仅在显式配置后注册，也受副作用恢复限制。
 
 ## 模块
 
@@ -17,7 +17,7 @@
 - `internal/policy`: action、计划、结构化证据、根因约束、工具白名单和参数 schema 校验。
 - `internal/trace`: per-step execution trace storage.
 - `internal/report`: markdown report generation from diagnosis and trace evidence.
-- `internal/memory`: 从已保存 run 确定性生成复盘和索引；可选模型提取单次候选经验、按服务与环境整合，校验来源及摘要后提供受预算限制的历史提示。
+- `internal/memory`: 从已保存 Run 分块提取原始经验与详细复盘，按服务和环境模型整合经验库、轻量导航；诊断前分阶段模型选择主题和来源，保留来源校验、预算约束和离线规则回退。
 - `internal/schema`: structured action, observation, evidence, and diagnosis types.
 
 ## Runtime Loop
